@@ -5,7 +5,7 @@ The purpose of the above script is to be automating the login process to the NIT
 
 #### 1. Clone the Repository or Download it directly
 ```bash
-git clone https://github.com/bishwajitprasadgond/bishwajit_prasad_gond.git
+git clone https://github.com/bishwajitprasadgond/automation_script.git
 ```
 #### 2. Install Dependencies
 Make sure you have Python installed. The script relies on the following Python packages:
