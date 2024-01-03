@@ -12,6 +12,9 @@ Make sure you have Python installed. The script relies on the following Python p
 
 - selenium
 - beautifulsoup4
+```bash
+pip install selenium beautifulsoup4
+```
 
 #### 3. Environment
 - Operating System: Any
