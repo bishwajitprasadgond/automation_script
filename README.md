@@ -13,21 +13,20 @@ Make sure you have Python installed. The script relies on the following Python p
 - selenium
 - beautifulsoup4
 
-##### Environment
+#### 3. Environment
 - Operating System: Any
 - Browser: Microsoft Edge (Chromium-based)
 - Python Version: 3.x
-### How to Run
-Configure Script:
+  
+###  How to Run
+#### 1. Configure Script:
 Open the script and provide your username and password in the main function.
-
-Run the Script:
-
+#### 2. Run the Script:
 ```bash
-python script_name.py
+python nitrkl_10hr_autologin.py
 ```
 This will execute the script, perform the login, and display the success or failure message.
 
-Wait for Next Attempt:
+#### 3. Wait for Next Attempt:
 After each login attempt, the script will wait for 10 hours before the next attempt.
 
