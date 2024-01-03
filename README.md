@@ -3,9 +3,9 @@
 
 ### Installation Instructions
 
-#### 1. Clone the Repository
+#### 1. Clone the Repository or Download it directly
 ```bash
-git clone https://github.com/bishwajitprasadgond/bishwajit_prasad_gond.git 
+git clone https://github.com/bishwajitprasadgond/bishwajit_prasad_gond.git
 ```
 #### 2. Install Dependencies
 Make sure you have Python installed. The script relies on the following Python packages:
