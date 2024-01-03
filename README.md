@@ -20,7 +20,7 @@ Make sure you have Python installed. The script relies on the following Python p
   
 ###  How to Run
 #### 1. Configure Script:
-Open the script and provide your username and password in the main function.
+Open the script and provide your __username__ and __password__ in the main function.
 #### 2. Run the Script:
 ```bash
 python nitrkl_10hr_autologin.py
