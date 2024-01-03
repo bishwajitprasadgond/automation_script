@@ -1,5 +1,5 @@
 # All daily life automation script.
-## 1) NIT Rourkela Network Login Automation Script
+## 1) NIT Rourkela Network Login Automation Script (nitrkl_10hr_autologin.py)
 The purpose of the above script is to be automating the login process to the NIT Rourkela Login portal using the Selenium and BeautifulSoup libraries in Python. The script is designed to repeatedly attempt the login at regular intervals (__default 10 Hrs__) and print whether the login was successful or not.
 ### Installation Instructions
 
