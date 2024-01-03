@@ -5,7 +5,7 @@
 
 #### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-username/nitr-login-automation.git bash
+git clone https://github.com/bishwajitprasadgond/bishwajit_prasad_gond.git 
 ```
 #### 2. Install Dependencies
 Make sure you have Python installed. The script relies on the following Python packages:
