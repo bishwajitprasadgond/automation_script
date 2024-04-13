@@ -79,5 +79,31 @@ my_folder/
 - If a file with a particular extension already exists in the destination folder, it will not be moved, and an error message will be printed.
 
 ---
+## File Arranger Tool
+
+**Description:**
+The File Arranger Tool is a utility designed to help you organize your files by their types in a specific folder. It simplifies file organization and makes it easier to manage your files effectively.
+
+**Features:**
+- Arrange files by their types (e.g., documents, images, videos).
+- User-friendly interface.
+- Supports arranging files in any folder on your computer.
+
+**Usage:**
+1. Download the `file_arranger.exe` executable file.
+2. Run the executable file.
+3. Enter the folder path where you want to arrange the files (e.g., `C:\user\downloads`).
+4. Press "Submit" to start arranging the files.
+
+**Contributing:**
+Contributions are welcome! If you have any suggestions or improvements, please submit a pull request.
+
+**License:**
+This project is licensed under the MIT License. See the `LICENSE` file for details.
+
+**Acknowledgements:**
+Thanks to all contributors who have helped improve the File Arranger Tool.
+
+---
 
 
