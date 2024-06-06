@@ -53,7 +53,7 @@ def perform_login(driver, username, password):
 
         # Check if the login was successful using BeautifulSoup
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        if "Your Expected Text on Successful Login" in soup.get_text():
+        if "Network Access Granted" in soup.get_text():
             print("Login successful!")
         else:
             print("Login failed!")
@@ -65,7 +65,7 @@ def perform_login(driver, username, password):
 def main():
     # login_url = 'https://login.nitrkl.ac.in/PortalMain'
     username = '222cs3113'
-    password = '##########'
+    password = '#########'
 
     driver = None  # Initialize the driver outside the try block
 
