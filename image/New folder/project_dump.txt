@@ -3,10 +3,12 @@ PROJECT STRUCTURE
 ====================================================================================================
 
 COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/
+    |-- Makefile
     |-- config.toml
     |-- project_dump_reverse.py
     |-- dlh_ai/
         |-- .env
+        |-- .env.example
         |-- README.md
         |-- pyproject.toml
         |-- requirements.txt
@@ -15,7 +17,6 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/
             |-- app.py
             |-- fonts/
         |-- data/
-            |-- path.txt
             |-- seed_synthetic_data.py
             |-- comp_db/
                 |-- db_details.txt
@@ -39,7 +40,6 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/
                 |-- llm.toml
                 |-- logging.toml
                 |-- query.toml
-                |-- ui.toml
             |-- core/
                 |-- __init__.py
                 |-- exceptions.py
@@ -57,15 +57,10 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/
                 |-- sql_writer_agent.py
                 |-- state.py
             |-- prompt/
-                |-- common.yaml
-                |-- compliance.yaml
-                |-- example_prompt.yaml
                 |-- intent_checker.yaml
-                |-- report_generation.yaml
                 |-- schema_checker.yaml
                 |-- sql_review.yaml
                 |-- sql_writer.yaml
-                |-- system.yaml
         |-- utils/
             |-- __init__.py
             |-- config.py
@@ -76,6 +71,58 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/
 ====================================================================================================
 FILE CONTENTS
 ====================================================================================================
+
+####################################################################################################
+FILE: Makefile
+####################################################################################################
+
+# Makefile — common developer commands for the Compliance Chatbot
+#
+# Usage:
+#   make run        — launch the Streamlit app
+#   make seed       — populate (or re-populate) the SQLite database
+#   make lint       — run ruff linter over the source tree
+#   make typecheck  — run mypy type-checker
+#   make clean      — remove __pycache__ and .pyc artefacts
+
+# ─── configurable variables ──────────────────────────────────────────────────
+PYTHON      ?= python
+STREAMLIT   ?= streamlit
+APP         := dlh_ai/application/app.py
+SRC_ROOT    := dlh_ai
+SEED_SCRIPT := dlh_ai/data/seed_synthetic_data.py
+
+# ─── default target ──────────────────────────────────────────────────────────
+.DEFAULT_GOAL := help
+
+.PHONY: help run seed lint typecheck clean
+
+help:           ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	    awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+# ─── application ─────────────────────────────────────────────────────────────
+run:            ## Launch the Streamlit app  (streamlit run dlh_ai/application/app.py)
+	$(STREAMLIT) run $(APP)
+
+# ─── database ────────────────────────────────────────────────────────────────
+seed:           ## Seed / re-seed the SQLite database with synthetic compliance data
+	$(PYTHON) $(SEED_SCRIPT)
+
+# ─── code quality ────────────────────────────────────────────────────────────
+lint:           ## Run ruff linter (install: pip install ruff)
+	ruff check $(SRC_ROOT)
+
+typecheck:      ## Run mypy type-checker (install: pip install mypy)
+	mypy $(SRC_ROOT) --ignore-missing-imports
+
+# ─── housekeeping ────────────────────────────────────────────────────────────
+clean:          ## Remove __pycache__ directories and .pyc files
+	find $(SRC_ROOT) -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find $(SRC_ROOT) -name "*.pyc" -delete 2>/dev/null || true
+	@echo "Clean complete."
+
+
 
 ####################################################################################################
 FILE: config.toml
@@ -284,6 +331,73 @@ MODEL__MODEL_TEMPERATURE=0.1
 MODEL__DLH_BASE_URL=http://10.190.236.15:9000/api/v1
 MODEL__DLH_API_KEY=EMPTY
 MODEL__DLH_VERIFY_SSL=false
+
+
+####################################################################################################
+FILE: dlh_ai\.env.example
+####################################################################################################
+
+# .env.example — copy this file to .env and fill in your values.
+#
+# All variables are OPTIONAL — defaults are defined in utils/config.py.
+# Environment variables always take precedence over .env file values.
+# The __ delimiter maps nested settings: DATABASE__DB_NAME → database.db_name
+#
+# Usage:
+#   cp dlh_ai/.env.example dlh_ai/.env
+#   # Edit dlh_ai/.env with your real credentials
+#   streamlit run dlh_ai/application/app.py
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APPLICATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Display name shown in the Streamlit page title bar
+APPLICATION_NAME="COMPLIANCE-BOT (UI + LLM Hybrid)"
+
+# Logging verbosity: DEBUG | INFO | WARNING | ERROR
+LOG_LEVEL=INFO
+
+# Directory where rotating log files are written (relative to dlh_ai/)
+LOG_DIR=data/logs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM / MODEL SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Remote model identifier sent in every chat-completions request
+MODEL_NAME=google/gemma-4-31b-it
+
+# Maximum number of new tokens the LLM will generate per request
+MODEL_MAX_NEW_TOKENS=512
+
+# Sampling temperature — lower = more deterministic SQL output (range: 0.0–1.0)
+MODEL_TEMPERATURE=0.1
+
+# DLH inference server base URL (OpenAI-compatible /chat/completions endpoint)
+DLH_BASE_URL=http://10.190.236.15:9000/api/v1
+
+# Bearer token for the DLH endpoint (set to EMPTY if no auth required)
+DLH_API_KEY=EMPTY
+
+# Set to true to verify TLS certificates; false for self-signed / dev certs
+DLH_VERIFY_SSL=false
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATABASE SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Database engine (always SQLite for this project)
+DATABASE__DB_TYPE=SQLite
+
+# Folder containing the .db file — relative to dlh_ai/
+DATABASE__DB_FOLDER=data/comp_db
+
+# SQLite database filename
+DATABASE__DB_NAME=COMP_REPORTS.db
+
 
 
 ####################################################################################################
@@ -1339,16 +1453,6 @@ if st.session_state.page == "chat":
             st.session_state.last_csv  = None
             st.rerun()
 
-
-
-####################################################################################################
-FILE: dlh_ai\data\path.txt
-####################################################################################################
-
-
-
-
-/home/cdsw/src/dlh_ai/data/comp_db/COMP_REPORTS.db
 
 
 ####################################################################################################
@@ -3061,13 +3165,12 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/           ← workspace root
     │
     ├── genai/
     │   ├── config/                 ← static TOML files, read by registry.py / logger.py / executor_agent.py
-    │   │   ├── application.toml
-    │   │   ├── database.toml
+    │   │   ├── application.toml    ← informational only (not loaded at runtime)
+    │   │   ├── database.toml       ← informational only (superseded by DatabaseSettings)
     │   │   ├── databases.toml  ★★★ ← table metadata + few-shots (read by registry.py)
-    │   │   ├── llm.toml
+    │   │   ├── llm.toml            ← informational only (superseded by ModelSettings)
     │   │   ├── logging.toml    ★★  ← logger config (read by logger.py)
-    │   │   ├── query.toml      ★★  ← row-limit policy (read by executor_agent.py)
-    │   │   └── ui.toml
+    │   │   └── query.toml      ★★  ← row-limit policy (read by executor_agent.py)
     │   │
     │   ├── core/
     │   │   ├── exceptions.py       ← base + domain exceptions (imported by model, processor, nodes)
@@ -3091,12 +3194,7 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/           ← workspace root
     │       ├── intent_checker.yaml ← read by intent_checker.py
     │       ├── schema_checker.yaml ← read by schema_checker.py
     │       ├── sql_writer.yaml     ← read by sql_writer_agent.py
-    │       ├── sql_review.yaml     ← read by sql_reviewer.py
-    │       ├── common.yaml
-    │       ├── compliance.yaml
-    │       ├── example_prompt.yaml
-    │       ├── report_generation.yaml
-    │       └── system.yaml
+    │       └── sql_review.yaml     ← read by sql_reviewer.py
     │
     ├── utils/
     │   ├── config.py               ← AppSettings / ModelSettings / DatabaseSettings (imported by many)
@@ -3113,9 +3211,12 @@ COMPLIANCE-CHATBOT-DLH-V3-STREAMLIT/           ← workspace root
     │   └── seed_synthetic_data.py  ← standalone CLI, writes COMP_REPORTS.db
     │
     ├── docs/                       ← documentation (you are here)
+    ├── .env.example                ← copy to .env and fill in credentials
     ├── requirements.txt
     └── pyproject.toml
 ```
+
+> **Workspace root** also contains `Makefile` — run `make help` for common commands.
 
 ---
 
@@ -3280,7 +3381,6 @@ Read as `A ──imports──► B` meaning file A contains `from B import ...`
 | `genai/config/application.toml` | *(TOML data file)* | *(informational — not directly loaded at runtime)* |
 | `genai/config/database.toml` | *(TOML data file)* | *(informational — superseded by DatabaseSettings in utils/config.py)* |
 | `genai/config/llm.toml` | *(TOML data file)* | *(informational — superseded by ModelSettings in utils/config.py)* |
-| `genai/config/ui.toml` | *(TOML data file)* | *(informational — UI is now Streamlit)* |
 | `genai/prompt/intent_checker.yaml` | *(YAML data file)* | `genai/nl2sql_agent/intent_checker.py` via `utils/registry.get_prompt()` |
 | `genai/prompt/schema_checker.yaml` | *(YAML data file)* | `genai/nl2sql_agent/schema_checker.py` via `utils/registry.load_prompt()` |
 | `genai/prompt/sql_writer.yaml` | *(YAML data file)* | `genai/nl2sql_agent/sql_writer_agent.py` via `utils/registry.load_prompt()` |
@@ -3393,7 +3493,6 @@ Read as `A ──imports──► B` meaning file A contains `from B import ...`
 | `application.toml` | *(informational only)* | App display name — not imported at runtime |
 | `database.toml` | *(informational only)* | Superseded by `DatabaseSettings` in `utils/config.py` |
 | `llm.toml` | *(informational only)* | Superseded by `ModelSettings` in `utils/config.py` |
-| `ui.toml` | *(informational only)* | Legacy UI reference — Streamlit is the UI layer now |
 
 ### YAML Prompt Files (`genai/prompt/`)
 
@@ -3403,11 +3502,6 @@ Read as `A ──imports──► B` meaning file A contains `from B import ...`
 | `schema_checker.yaml` | `schema_checker.py` via `registry.load_prompt()` | Header templates: schema_header, table_header, sample_header, error messages |
 | `sql_writer.yaml` | `sql_writer_agent.py` via `registry.load_prompt()` | System role, generation rules, prompt template, retry feedback header |
 | `sql_review.yaml` | `sql_reviewer.py` via `registry.get_prompt()` | Reviewer feedback strings: max_retries, empty_sql, disallowed_kw, unknown_tables |
-| `common.yaml` | *(not loaded at runtime — reference only)* | Shared boilerplate |
-| `compliance.yaml` | *(not loaded at runtime — reference only)* | Compliance domain context |
-| `example_prompt.yaml` | *(not loaded at runtime — reference only)* | Prompt construction example |
-| `report_generation.yaml` | *(not loaded at runtime — reference only)* | Report generation reference |
-| `system.yaml` | *(not loaded at runtime — reference only)* | Top-level system persona |
 
 ---
 
@@ -4017,6 +4111,21 @@ python dlh_ai/data/seed_synthetic_data.py --count 2000
 
 ---
 
+## Makefile Shortcuts
+
+A `Makefile` at the workspace root provides common commands:
+
+```bash
+make run        # launch Streamlit app
+make seed       # seed / re-seed the SQLite database
+make lint       # run ruff linter
+make typecheck  # run mypy type-checker
+make clean      # remove __pycache__ and .pyc files
+make help       # list all available targets
+```
+
+---
+
 ## Start the Streamlit App
 
 ```bash
@@ -4294,7 +4403,7 @@ FILE: dlh_ai\genai\config\application.toml
 [application]
 name        = "COMPLIANCE-BOT (UI + LLM Hybrid)"
 page_config = "SBI COMPLIANCE-BOT"
-version     = "2.0.0"
+version     = "3.0.0"
 
 [server]
 host      = "0.0.0.0"
@@ -4478,11 +4587,6 @@ level     = "DEBUG"
 handlers  = ["console", "rotating_file"]
 propagate = false
 
-[logging.loggers.uvicorn]
-level     = "INFO"
-handlers  = ["console"]
-propagate = false
-
 [logging.root]
 level    = "WARNING"
 handlers = ["console"]
@@ -4509,19 +4613,6 @@ max_display_rows      = 50
 
 
 ####################################################################################################
-FILE: dlh_ai\genai\config\ui.toml
-####################################################################################################
-
-
-
-
-
-
-[ui]
-backend_url = "http://0.0.0.0:8066"
-
-
-####################################################################################################
 FILE: dlh_ai\genai\core\__init__.py
 ####################################################################################################
 
@@ -4535,8 +4626,8 @@ genai.core — compliance orchestration, LLM provider, schemas, and exceptions.
 Four modules:
   exceptions.py — domain exception hierarchy
   schemas.py    — Pydantic API models + response factory functions
-  model.py      — LLM lifecycle, inference helpers, provider manager, embedding stub
-  processor.py  — ComplianceProcessor orchestration + legacy schema dict
+  model.py      — LLM lifecycle, inference helpers, retry wrapper
+  processor.py  — ComplianceProcessor orchestration + reference schema dict
 """
 
 from genai.core.exceptions import (
@@ -5464,13 +5555,13 @@ FILE: dlh_ai\genai\nl2sql_agent\__init__.py
 genai.nl2sql_agent — six-node LangGraph NL2SQL pipeline.
 
 Nodes:
-  intent_checker.py  — IntentChecker   (Node 1, rule-based, reads intent_checker.toml)
-  schema_checker.py  — SchemaChecker   (Node 2, SQLite PRAGMA, reads schema_checker.toml)
-  sql_writer_agent.py — SQLWriterAgent (Node 3, LLM call, reads sql_writer.toml)
-  sql_reviewer.py    — SQLReviewer     (Node 4, regex+DB, reads sql_review.toml)
-  sql_validator.py   — SQLValidator    (Node 4.5, sqlglot AST)
-  executor_agent.py  — ExecutorAgent   (Node 5, read-only SQLite, reads query.toml)
-  graph.py           — StateGraph factory (build_nl2sql_graph + create_graph)
+  intent_checker.py   — IntentChecker   (Node 1, rule-based,        reads intent_checker.yaml)
+  schema_checker.py   — SchemaChecker   (Node 2, SQLite PRAGMA,     reads schema_checker.yaml)
+  sql_writer_agent.py — SQLWriterAgent  (Node 3, LLM call,          reads sql_writer.yaml)
+  sql_reviewer.py     — SQLReviewer     (Node 4, regex+DB checks,   reads sql_review.yaml)
+  sql_validator.py    — SQLValidator    (Node 4.5, sqlglot AST,     no prompt file)
+  executor_agent.py   — ExecutorAgent   (Node 5, read-only SQLite,  reads query.toml)
+  graph.py            — StateGraph factory (build_nl2sql_graph + create_graph)
 """
 
 from genai.nl2sql_agent.graph import build_nl2sql_graph, create_graph
@@ -7082,117 +7173,6 @@ class AgentState(TypedDict, total=False):
 
 
 ####################################################################################################
-FILE: dlh_ai\genai\prompt\common.yaml
-####################################################################################################
-
-
-
-sql_tags:
-  begin_tag: "<begin_sql_response>"
-  end_tag: "<end_sql_response>"
-
-examples:
-  read_only_queries:
-    items:
-      - "How many accounts have KYC flag N?"
-      - "Show all accounts in the Mumbai circle."
-      - "What is the maturity date for senior citizen accounts in Thane branch?"
-      - "List accounts with balance above 100000."
-
-
-####################################################################################################
-FILE: dlh_ai\genai\prompt\compliance.yaml
-####################################################################################################
-
-
-
-tables:
-  COMP_TBL:
-    filter_query: "SELECT * FROM COMP_TBL WHERE ACCT_BRNCH IN ({branch_code})"
-    table_description: "Compliance table for term-deposit products targeting senior-citizen customers."
-    columns:
-      BRCD: "BRANCH CODE OR BRANCH NUMBER"
-      CUST_NBR: "CUSTOMER NUMBER — UNIQUE IDENTIFIER ASSIGNED TO EACH CUSTOMER IN THE BANKING SYSTEM"
-      CUST_NBR_CHKDGT: "CUSTOMER NUMBER CHECK DIGIT"
-      ACCT_NBR: "UNIQUE IDENTIFIER FOR A SPECIFIC BANK ACCOUNT"
-      ACCT_NBR_CHKDGT: "ACCOUNT NUMBER CHECK DIGIT"
-      ACCT_BRNCH: "ACCOUNT BRANCH — IDENTIFIES THE BRANCH WHERE THE ACCOUNT IS MAINTAINED OR HELD"
-      BRTH_DT: "BIRTH DATE — CUSTOMER'S DATE OF BIRTH, USED FOR AGE CALCULATION AND KYC PURPOSES"
-      AGE_YRS: "AGE IN YEARS — CALCULATED FROM BIRTH DATE TO CURRENT DATE, USED FOR SEGMENTATION AND ELIGIBILITY"
-      SR_CTZN_ACCT_FLG: "FLAG IS 1 IF THE ACCOUNT HOLDER IS A SENIOR CITIZEN (TYPICALLY AGE 60+), OTHERWISE 0"
-      KYC_FLG: "FLAG IS Y IF KNOW-YOUR-CUSTOMER DOCUMENTATION IS COMPLETE, OTHERWISE N"
-      END_OF_DAY_BAL: "END OF DAY BALANCE — THE CLOSING BALANCE OF THE ACCOUNT AT END OF BUSINESS DAY"
-      ACCT_OPN_DT: "ACCOUNT OPEN DATE — THE DATE WHEN THE BANK ACCOUNT WAS INITIALLY OPENED"
-      MTRTY_DT: "MATURITY DATE — THE DATE WHEN A TERM DEPOSIT OR LOAN REACHES MATURITY"
-      NEW_EFFCTV_RT: "NEW EFFECTIVE RATE — THE UPDATED INTEREST RATE APPLIED TO THE ACCOUNT OR PRODUCT"
-      PRDCT_ID: "PRODUCT ID — IDENTIFIER FOR THE FINANCIAL PRODUCT (E.G. SAVINGS, FIXED DEPOSIT) LINKED TO THE ACCOUNT"
-      PF_FAC_REPT: "PENSION FUND FACILITY REPORTING — INDICATOR OR DATA RELATED TO PENSION FUND REPORTING REQUIREMENTS"
-      PRODUCT_NAME: "HUMAN-READABLE NAME OF THE FINANCIAL PRODUCT ASSOCIATED WITH THE ACCOUNT"
-      BRANCHNAME: "FULL NAME OF THE BRANCH WHERE THE ACCOUNT IS MAINTAINED"
-      CIRCLENAME: "CIRCLE NAME — ADMINISTRATIVE REGION OR ZONE THAT THE BRANCH OR CUSTOMER BELONGS TO"
-      CIRCLECD: "CIRCLE CODE — CODE REPRESENTING THE ADMINISTRATIVE CIRCLE OR REGION"
-      EXPECTED_EFFCTV_RT: "THE EXPECTED RATE OF INTEREST FOR A SENIOR CITIZEN BASED ON THE CURRENT PRODUCT CODE"
-      ISMOD: "FLAG IS YES IF THE ACCOUNT TYPE IS MOD (MULTI-OPTION DEPOSIT), OTHERWISE NO"
-
-few_shot_examples:
-  COMP_TBL:
-    examples: |
-      Question: Show the customers whose age is more than 60 and senior-citizen account flag is 1.
-      Response:
-      <begin_sql_response>
-      SELECT * FROM COMP_TBL WHERE SR_CTZN_ACCT_FLG = 1 AND AGE_YRS > 60;
-      <end_sql_response>
-
-      Question: Show the customers whose age is less than 60 and product name contains 'SR CT'.
-      Response:
-      <begin_sql_response>
-      SELECT * FROM COMP_TBL WHERE UPPER(PRODUCT_NAME) LIKE '%SR CT%' AND AGE_YRS < 60;
-      <end_sql_response>
-
-      Question: Show the customers whose maturity date is in December 2025.
-      Response:
-      <begin_sql_response>
-      SELECT * FROM COMP_TBL WHERE MTRTY_DT BETWEEN '2025-12-01' AND '2025-12-31';
-      <end_sql_response>
-
-      Question: List all accounts where KYC flag is N.
-      Response:
-      <begin_sql_response>
-      SELECT * FROM COMP_TBL WHERE KYC_FLG = 'N';
-      <end_sql_response>
-
-      Question: Show the top 10 accounts with the highest end-of-day balance.
-      Response:
-      <begin_sql_response>
-      SELECT * FROM COMP_TBL ORDER BY END_OF_DAY_BAL DESC LIMIT 10;
-      <end_sql_response>
-
-
-####################################################################################################
-FILE: dlh_ai\genai\prompt\example_prompt.yaml
-####################################################################################################
-
-
-
-
-description: You are a helpful assistant.
-
-instructions: |
-
-  Add all the instructions here.
-
-  - Add all the instructions here.
-  - More instructions here.
-
-  
-expected_output: |
-
-  After the summary is done, please provide the summary in the following format:
-
-    - Add points here to make LLM follow the format.
-
-
-####################################################################################################
 FILE: dlh_ai\genai\prompt\intent_checker.yaml
 ####################################################################################################
 
@@ -7234,27 +7214,6 @@ messages:
     • "How many accounts have KYC flag N?"
     • "Show accounts in the Mumbai circle."
     • "List senior citizen accounts in Thane branch."
-
-
-####################################################################################################
-FILE: dlh_ai\genai\prompt\report_generation.yaml
-####################################################################################################
-
-
-
-report:
-  default_title: "Compliance Report"
-  default_format: "markdown"
-  summary_template:
-    template: |
-
-      **Question:** {question}
-      **Generated SQL:** {sql_query}
-      **Total Records:** {record_count}
-      **Executed At:** {timestamp}
-
-      ### Results
-      {result_summary}
 
 
 ####################################################################################################
@@ -7351,28 +7310,6 @@ prompt:
 
 retry:
   feedback_header: "[REVIEWER FEEDBACK — fix these issues in your new SQL]"
-
-
-####################################################################################################
-FILE: dlh_ai\genai\prompt\system.yaml
-####################################################################################################
-
-
-
-system:
-  application_description: >-
-    LangGraph-based agentic NL-to-SQL compliance query engine for banking
-    term-deposit products. Six specialised agents collaborate to analyse intent,
-    retrieve schema, generate, review, validate and execute SQL queries.
-
-  pipeline_description: |
-    Six-node LangGraph pipeline:
-      1. IntentAgent      — rule-based intent classification, no LLM
-      2. SchemaAgent      — live SQLite schema introspection, no LLM
-      3. SQLWriterAgent   — LLM SQL generation (only LLM call)
-      4. SQLReviewAgent   — regex safety + table-existence check, no LLM
-      4.5 SQLValidatorAgent — sqlglot AST validation, no LLM
-      5. ExecutorAgent    — read-only SQLite execution, no LLM
 
 
 ####################################################################################################
