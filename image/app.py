@@ -166,8 +166,8 @@ st.markdown(f"""
         --clr-text:        #1e1e1e;          /* primary body text: dark grey       */
         --clr-text-muted:  #636363;          /* secondary / label text             */
         --clr-text-faint:  #9e9e9e;          /* placeholder / hint text            */
-        --clr-code-bg:     #2c2c2c;          /* code block: dark grey (not black)  */
-        --clr-code-text:   #ebebeb;          /* code block text: off-white         */
+        --clr-code-bg:     #ffffff;          /* code block: white                  */
+        --clr-code-text:   #1e1e1e;          /* code block text: dark grey         */
         --shadow-xs:   0 1px 3px rgba(0,0,0,0.07);
         --shadow-sm:   0 2px 8px rgba(0,0,0,0.09);
         --shadow-md:   0 4px 18px rgba(0,0,0,0.11);
@@ -185,6 +185,7 @@ st.markdown(f"""
     p, li, label, span, div,
     h1, h2, h3, h4 {{
         font-family: 'Urbanist', 'Segoe UI', system-ui, sans-serif !important;
+        font-weight: 500 !important;   /* consistent medium weight everywhere */
         color: var(--clr-text);
     }}
 
@@ -484,7 +485,7 @@ st.markdown(f"""
     .pipeline-track {{
         display: flex;
         align-items: center;
-        gap: 0;
+        gap: 8px;
         flex-wrap: nowrap;
         overflow-x: auto;
         padding: 14px 18px;
@@ -502,7 +503,7 @@ st.markdown(f"""
         padding: 6px 14px;
         border-radius: var(--radius-pill);
         font-size: 12px;
-        font-weight: 600;
+        font-weight: 500;              /* same weight as global body text */
         background: var(--clr-surface-alt);
         color: var(--clr-text-muted);
         border: 1.5px solid var(--clr-border);
@@ -511,22 +512,17 @@ st.markdown(f"""
         transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
         position: relative;
     }}
-    /* Connector arrow between pills */
+    /* No connector between pills */
     .stage-pill + .stage-pill::before {{
-        content: '';
-        display: inline-block;
-        width: 18px;
-        height: 1.5px;
-        background: var(--clr-border);
-        margin-right: 6px;
-        flex-shrink: 0;
+        content: none;
+        display: none;
     }}
     .stage-pill.active {{
         background: #1d4ed8;
         color: #ffffff !important;
         border-color: transparent;
         box-shadow: 0 2px 8px rgba(29,78,216,0.35);
-        font-weight: 700;
+        font-weight: 500;              /* same weight as inactive — no jump */
     }}
     .stage-pill.active::before {{
         background: #3b82f6;
@@ -582,9 +578,10 @@ st.markdown(f"""
         border-radius: var(--radius-md);
         margin-bottom: 14px;
         font-size: 14px;
-        line-height: 1.55;
+        line-height: 1.65;
         clear: both;
         box-shadow: var(--shadow-xs);
+        white-space: pre-line;   /* renders \n line-breaks from YAML strings */
     }}
     /* Clarification notice — light grey tint */
     .msg-notice-clarify {{
@@ -596,25 +593,26 @@ st.markdown(f"""
         border-radius: var(--radius-md);
         margin-bottom: 14px;
         font-size: 14px;
-        line-height: 1.55;
+        line-height: 1.65;
         clear: both;
         box-shadow: var(--shadow-xs);
+        white-space: pre-line;   /* renders \n line-breaks from YAML strings */
     }}
 
     /* ── CODE BLOCK (SQL / trace / JSON) ─────────────────────────────── */
     .code-block {{
-        background: var(--clr-code-bg);
-        color: var(--clr-code-text);
-        padding: 18px 20px;
+        background: #ffffff;
+        color: #1e1e1e;
+        padding: 16px 18px;
         border-radius: var(--radius-md);
-        font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-        font-size: 12.5px;
-        line-height: 1.65;
-        margin: 10px 0 14px;
+        font-family: 'Courier New', 'Courier', monospace;
+        font-size: 12px;
+        line-height: 1.70;
+        margin: 8px 0 14px;
         white-space: pre-wrap;
-        word-break: break-all;
-        border: 1px solid rgba(255,255,255,0.06);
-        box-shadow: var(--shadow-sm);
+        word-break: break-word;
+        border: 1px solid #dedede;
+        box-shadow: var(--shadow-xs);
         clear: both;
     }}
     /* Label row above code blocks */
@@ -623,7 +621,7 @@ st.markdown(f"""
         font-weight: 700;
         letter-spacing: 0.8px;
         text-transform: uppercase;
-        color: var(--clr-text-faint);
+        color: var(--clr-text-muted);
         margin-bottom: 4px;
         display: block;
     }}
