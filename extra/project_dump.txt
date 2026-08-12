@@ -1494,8 +1494,9 @@ st.markdown(f"""
         color: #1e1e1e;
         padding: 16px 18px;
         border-radius: var(--radius-md);
-        font-family: 'Courier New', 'Courier', monospace;
-        font-size: 12px;
+        font-family: 'Courier New', 'Courier', monospace !important;
+        font-size: 12px !important;
+        font-weight: 400 !important;   /* override the global 500 — code is always regular */
         line-height: 1.70;
         margin: 8px 0 14px;
         white-space: pre-wrap;
@@ -1503,6 +1504,27 @@ st.markdown(f"""
         border: 1px solid #dedede;
         box-shadow: var(--shadow-xs);
         clear: both;
+    }}
+    /* Every element inside the code block inherits monospace + size — no overrides */
+    .code-block * {{
+        font-family: 'Courier New', 'Courier', monospace !important;
+        font-size: 12px !important;
+        font-weight: 400 !important;
+        line-height: 1.70 !important;
+    }}
+    /* Section label inside code block — slightly darker, same size */
+    .code-block .cb-label {{
+        font-weight: 600 !important;   /* just a touch heavier, not a heading */
+        color: #444444;
+        display: block;
+        margin-bottom: 2px;
+    }}
+    /* Divider line inside code block */
+    .code-block .cb-divider {{
+        display: block;
+        border: none;
+        border-top: 1px solid #e0e0e0;
+        margin: 4px 0 6px;
     }}
     /* Label row above code blocks */
     .code-label {{
@@ -2087,11 +2109,25 @@ elif st.session_state.page == "chat":
                             # No rows returned — clear any previous CSV download
                             st.session_state.last_csv = None
 
-                        # Build the metadata block rendered in the dark code box
-                        meta_content  = f"Agent Trace  :  {' > '.join(response.stages)}\n"
-                        meta_content += f"Summary      :  {response.result_summary}\n\n"
-                        meta_content += f"SQL\n{'-'*60}\n{response.sql_query}\n\n"
-                        meta_content += f"Data (first rows)\n{'-'*60}\n{json.dumps(response.df_output, indent=2)}"
+                        # Build the metadata block — uses HTML spans so section
+                        # labels render at the same 12px monospace as the content,
+                        # with no markdown parsing or heading inflation.
+                        stages_str = " &gt; ".join(response.stages)
+                        sql_safe   = (response.sql_query or "").replace("<", "&lt;").replace(">", "&gt;")
+                        data_safe  = json.dumps(response.df_output, indent=2).replace("<", "&lt;").replace(">", "&gt;")
+                        meta_content = (
+                            f'<span class="cb-label">Agent Trace</span>'
+                            f'{stages_str}\n'
+                            f'<hr class="cb-divider">'
+                            f'<span class="cb-label">Summary</span>'
+                            f'{response.result_summary}\n'
+                            f'<hr class="cb-divider">'
+                            f'<span class="cb-label">SQL</span>'
+                            f'{sql_safe}\n'
+                            f'<hr class="cb-divider">'
+                            f'<span class="cb-label">Data (first rows)</span>'
+                            f'{data_safe}'
+                        )
 
                         # Append the full bot response to session history
                         st.session_state.messages.append({
