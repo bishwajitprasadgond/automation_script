@@ -393,6 +393,10 @@ log_dir   = "data/logs"
 # ---------------------------------------------------------------------------
 
 [database]
+# Set use_local_db = true  → query the local SQLite file at db_file (dev / offline).
+# Set use_local_db = false → query the Iceberg table via PandasEngine / Hive on Tez (prod).
+use_local_db    = true
+db_file         = "src/dlh_ai/data/comp_db/COMP_REPORTS.db"
 db_type         = "Iceberg"
 iceberg_table   = "dev_feature_store.COMP_TBL"
 connection_name = "DLH-DEV-UAT - Hive on Tez"
@@ -1008,7 +1012,7 @@ or the ``.env`` file.  They must **never** be hardcoded or committed.
 
 Configuration classes
 ---------------------
-* :class:`DatabaseSettings`  — Iceberg / Hive connection details.
+* :class:`DatabaseSettings`  — Database connection details (SQLite or Iceberg / Hive).
 * :class:`LlmDlhSettings`    — DLH inference-server sub-settings.
 * :class:`ModelSettings`     — LLM provider and generation parameters.
 * :class:`QuerySettings`     — SQL query execution limits.
@@ -1034,6 +1038,8 @@ Examples
 --------
 >>> from dlh_ai.config import get_settings
 >>> cfg = get_settings()
+>>> cfg.database.use_local_db
+True
 >>> cfg.database.iceberg_table
 'dev_feature_store.COMP_TBL'
 >>> cfg.model.model_name
@@ -1090,18 +1096,33 @@ _CONFIG_TOML: Path = Path(__file__).resolve().parents[1] / "config.toml"
 
 
 class DatabaseSettings(BaseSettings):
-    """Iceberg / Hive data-connection configuration.
+    """Database connection configuration — supports SQLite (local) and Iceberg / Hive.
 
     Values are read from ``[database]`` in ``config.toml``.
     Individual fields can be overridden via environment variables using
-    the ``DATABASE__`` prefix (e.g. ``DATABASE__ICEBERG_TABLE=...``).
+    the ``DATABASE__`` prefix (e.g. ``DATABASE__USE_LOCAL_DB=true``).
+
+    Switching between backends
+    --------------------------
+    Set ``use_local_db = true`` in ``[database]`` (or export
+    ``DATABASE__USE_LOCAL_DB=true``) to route queries to the local SQLite file
+    at ``db_file``.  Set it to ``false`` to use :class:`~dlh_ai.data.PandasEngine`
+    against the Hive / Iceberg cluster.
 
     Attributes
     ----------
+    use_local_db : bool
+        When ``True``, the executor uses SQLite (dev / offline mode).
+        When ``False``, the executor uses :class:`~dlh_ai.data.PandasEngine`
+        against Hive on Tez (production mode).  Default is ``True``.
+    db_file : str
+        Path to the local SQLite database file, relative to the project root.
+        Consulted only when ``use_local_db`` is ``True``.
+        Default is ``"src/dlh_ai/data/comp_db/COMP_REPORTS.db"``.
     db_type : str
-        Database engine type.  Default is ``"Iceberg"``.
+        Informational engine-type label.  Default is ``"Iceberg"``.
     iceberg_table : str
-        Fully-qualified Iceberg table name used by the query executor.
+        Fully-qualified Iceberg table name used in production mode.
         Default is ``"dev_feature_store.COMP_TBL"``.
     connection_name : str
         CML Data connection name for :class:`~dlh_ai.data.PandasEngine`.
@@ -1109,25 +1130,41 @@ class DatabaseSettings(BaseSettings):
 
     Examples
     --------
-    >>> from dlh_ai.utils.config import DatabaseSettings
+    >>> from dlh_ai.config import DatabaseSettings
     >>> db = DatabaseSettings()
+    >>> db.use_local_db
+    True
     >>> db.db_type
     'Iceberg'
     """
 
     model_config = SettingsConfigDict(extra="ignore")
 
+    use_local_db: bool = Field(
+        default=True,
+        description=(
+            "True → use local SQLite (dev/offline); "
+            "False → use PandasEngine / Hive on Tez (production)."
+        ),
+    )
+    db_file: str = Field(
+        default="src/dlh_ai/data/comp_db/COMP_REPORTS.db",
+        description=(
+            "Path to the local SQLite .db file, relative to the project root. "
+            "Used only when use_local_db is True."
+        ),
+    )
     db_type: str = Field(
         default="Iceberg",
-        description="Database engine type.",
+        description="Informational database engine type label.",
     )
     iceberg_table: str = Field(
         default="dev_feature_store.COMP_TBL",
-        description="Fully-qualified Iceberg table name.",
+        description="Fully-qualified Iceberg table name (production mode).",
     )
     connection_name: str = Field(
         default="DLH-DEV-UAT - Hive on Tez",
-        description="CML Data connection name for PandasEngine.",
+        description="CML Data connection name for PandasEngine (production mode).",
     )
 
 
@@ -1711,6 +1748,7 @@ import streamlit as st
 from ..config import get_settings
 from ..genai.core.model import ModelLoaderService
 from ..genai.core.processor import ComplianceProcessor
+from ..genai.core.schemas import ComplianceChatRequest
 from ..genai.nl2sql_agent.graph import build_nl2sql_graph
 
 _PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -2889,8 +2927,6 @@ elif st.session_state.page == "chat":
             with st.spinner("Agents collaborating..."):
                 try:
                     # Build the Pydantic request model - fixed question_id per session
-                    from genai.core.schemas import ComplianceChatRequest
-
                     request_obj = ComplianceChatRequest(
                         question=prompt, question_id="st_session"
                     )
@@ -3061,7 +3097,16 @@ FILE: src\dlh_ai\data\__init__.py
 dlh_ai.data — data-engine backends for the Compliance Chatbot.
 
 Provides three query-execution backends and two infrastructure clients
-that abstract away the underlying data platform:
+that abstract away the underlying data platform.
+
+The active backend for NL2SQL query execution is selected via
+``database.use_local_db`` in ``config.toml``:
+
+* ``use_local_db = true``  → :class:`~dlh_ai.genai.nl2sql_agent.ExecutorAgent`
+  uses the stdlib ``sqlite3`` module against the local ``.db`` file
+  (dev / offline).
+* ``use_local_db = false`` → :class:`PandasEngine` connects to Hive on Tez
+  via the CML Data connection (production).
 
 Backends
 --------
@@ -6274,23 +6319,32 @@ FILE: src\dlh_ai\genai\nl2sql_agent\__init__.py
 genai.nl2sql_agent — six-node LangGraph NL2SQL pipeline.
 
 Transforms a natural-language compliance question into a validated SQL
-query and executes it against the Iceberg table
-``dev_feature_store.COMP_TBL`` via the CML Data / Hive on Tez connection.
+query and executes it against the configured database backend.
+
+Backend selection (``config.toml``)
+------------------------------------
+.. code-block:: toml
+
+    [database]
+    use_local_db = true   # SQLite (dev / offline)  ← default
+    use_local_db = false  # PandasEngine / Hive on Tez (production)
 
 Pipeline nodes
 --------------
 1. ``intent_checker.py``    — :class:`IntentChecker`
    Rule-based relevance gate; reads ``intent_checker.yaml``.
 2. ``schema_checker.py``    — :class:`SchemaChecker`
-   Static Iceberg schema lookup; reads ``schema_checker.yaml``.
+   Static schema lookup; ``db_path`` is bare (SQLite) or fully-qualified
+   (Iceberg) depending on ``use_local_db``; reads ``schema_checker.yaml``.
 3. ``sql_writer_agent.py``  — :class:`SQLWriterAgent`
    LLM-driven SQL generation; reads ``sql_writer.yaml``.
 4. ``sql_reviewer.py``      — :class:`SQLReviewer`
    Regex and registry safety checks; reads ``sql_review.yaml``.
 5. ``sql_validator.py``     — :class:`SQLValidator`
-   ``sqlglot`` AST / Hive dialect validation (no prompt file).
+   ``sqlglot`` AST validation (no prompt file).
 6. ``executor_agent.py``    — :class:`ExecutorAgent`
-   Iceberg query execution via :class:`~dlh_ai.data.PandasEngine`.
+   Routes to SQLite or :class:`~dlh_ai.data.PandasEngine` (Iceberg)
+   based on ``use_local_db``.
 
 Graph factories
 ---------------
@@ -6329,9 +6383,19 @@ FILE: src\dlh_ai\genai\nl2sql_agent\executor_agent.py
 """
 Executor Agent — Node 5 of the NL2SQL LangGraph pipeline.
 
-Executes the validated SQL SELECT statement against the Iceberg table
-``dev_feature_store.COMP_TBL`` via ``PandasEngine`` (Hive on Tez / CML Data
-connection) and produces a concise human-readable summary.
+Executes the validated SQL SELECT statement against either a **local SQLite
+file** (dev / offline) or the **Iceberg table via PandasEngine** (Hive on Tez
+/ CML Data connection, production).
+
+The active backend is controlled by a single flag in ``config.toml``::
+
+    [database]
+    use_local_db = true   # → SQLite  (default, dev / offline)
+    use_local_db = false  # → PandasEngine / Hive on Tez (production)
+
+``db_file`` (also in ``[database]``) must point to the SQLite ``.db`` file
+when ``use_local_db = true``.  The path is resolved relative to the project
+root (two levels above ``src/dlh_ai/``).
 
 Result rendering is handled by the Streamlit UI via ``st.dataframe`` — this
 module only returns rows, column names, and a one-sentence summary string.
@@ -6351,30 +6415,51 @@ Row-limit policy (controlled via ``[query]`` in ``config.toml``)
 
 import logging
 import re
+import sqlite3
+from pathlib import Path
+
+import pandas as pd
 
 from ...config import get_settings
-from ...data._pandas_backend import PandasEngine
 from .state import AgentState
 
 LOGGER = logging.getLogger("dlh_ai")
 
 _LIMIT_RE: re.Pattern[str] = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 
-# Load query limits once at import time from the unified config.toml.
+# Load settings once at import time from the unified config.toml.
 _cfg = get_settings()
 _ENFORCE_LIMIT: bool = _cfg.query.enforce_default_limit
 _DEFAULT_LIMIT: int = _cfg.query.default_limit
 _MAX_DISPLAY_ROWS: int = _cfg.query.max_display_rows or 500
 
+# Backend selection flag — no code changes needed to switch.
+_USE_LOCAL_DB: bool = _cfg.database.use_local_db
+
+# Resolve the SQLite file path relative to the project root when needed.
+# src/dlh_ai/genai/nl2sql_agent/executor_agent.py → parents[4] = project root
+_PROJECT_ROOT: Path = Path(__file__).resolve().parents[4]
+_SQLITE_PATH: Path = _PROJECT_ROOT / _cfg.database.db_file
+
 
 def _ensure_limit(sql: str) -> tuple[str, bool]:
-    """
-    Apply the row-limit policy from query.toml.
+    """Apply the row-limit policy from ``[query]`` in ``config.toml``.
 
-    Returns *(effective_sql, injected)* where *injected* is True when
-    ``LIMIT <default_limit>`` was automatically appended.
+    Parameters
+    ----------
+    sql : str
+        Raw SQL statement to inspect.
 
-    When ``enforce_default_limit = false`` this is a no-op.
+    Returns
+    -------
+    tuple[str, bool]
+        ``(effective_sql, injected)`` where *injected* is ``True`` when
+        ``LIMIT <default_limit>`` was automatically appended.
+
+    Notes
+    -----
+    When ``enforce_default_limit = false`` this function is a no-op and
+    returns the original SQL unchanged with ``injected = False``.
     """
     if not _ENFORCE_LIMIT:
         return sql, False
@@ -6391,13 +6476,34 @@ def format_summary(
     default_limit: int = _DEFAULT_LIMIT,
     max_display_rows: int = _MAX_DISPLAY_ROWS,
 ) -> str:
-    """
-    Build a one-sentence result summary shown to the user.
+    """Build a one-sentence result summary shown to the user.
 
+    Parameters
+    ----------
+    rows : list[dict[str, object]]
+        Query result rows as a list of column-name → value mappings.
+    columns : list[str]
+        Ordered list of column names in the result set.
+    limit_injected : bool, optional
+        Whether a ``LIMIT`` clause was automatically appended to the SQL.
+        Default is ``False``.
+    default_limit : int, optional
+        The limit value that was injected (shown in the summary note).
+    max_display_rows : int, optional
+        Hard ceiling used to detect whether the result was truncated.
+
+    Returns
+    -------
+    str
+        A human-readable summary sentence.
+
+    Notes
+    -----
     Handles three cases:
-    - No rows → tells the user nothing matched.
-    - Single-cell aggregate (COUNT, SUM …) → highlights the value.
-    - Multi-row result → reports count and column names.
+
+    * No rows → tells the user nothing matched.
+    * Single-cell aggregate (COUNT, SUM …) → highlights the value.
+    * Multi-row result → reports count, columns, and any limit note.
     """
     count = len(rows)
 
@@ -6411,12 +6517,14 @@ def format_summary(
 
     if count >= max_display_rows:
         limit_note = (
-            f" (first {max_display_rows} shown — add a LIMIT clause to narrow results)"
+            f" (first {max_display_rows} shown"
+            " — add a LIMIT clause to narrow results)"
         )
     elif limit_injected:
         limit_note = (
-            f" (showing first {default_limit} rows — "
-            f"ask for more with 'show top N' or set enforce_default_limit=false in query.toml)"
+            f" (showing first {default_limit} rows"
+            " — ask for more with 'show top N'"
+            " or set enforce_default_limit=false in config.toml)"
         )
     else:
         limit_note = ""
@@ -6426,29 +6534,69 @@ def format_summary(
 
 
 class ExecutorAgent:
-    """
-    LangGraph node that executes the approved SQL query against the Iceberg
-    table ``dev_feature_store.COMP_TBL`` via ``PandasEngine`` and formats
-    the results.
+    """LangGraph node — executes the approved SQL query and formats results.
+
+    Selects the query backend from ``config.toml`` at construction time:
+
+    * ``use_local_db = true``  → SQLite via the stdlib ``sqlite3`` module.
+    * ``use_local_db = false`` → :class:`~dlh_ai.data.PandasEngine` (Hive on Tez).
 
     Row-limit behaviour is driven entirely by the ``[query]`` section of
     ``config.toml`` — no code changes needed to adjust limits.
 
     Parameters
     ----------
-    connection_name : str
-        CML Data connection name used by ``PandasEngine`` to reach Hive / Iceberg.
-        Defaults to the same value set in ``PandasEngine``.
+    connection_name : str, optional
+        CML Data connection name used by :class:`~dlh_ai.data.PandasEngine`
+        when operating in production (Iceberg) mode.
+        Ignored in SQLite mode.  Defaults to the value in ``config.toml``.
+
+    Attributes
+    ----------
+    use_local_db : bool
+        ``True`` when the SQLite backend is active.
     """
 
-    def __init__(self, connection_name: str = "DLH-DEV-UAT - Hive on Tez") -> None:
-        self._engine = PandasEngine(connection_name=connection_name)
+    def __init__(self, connection_name: str | None = None) -> None:
+        self.use_local_db: bool = _USE_LOCAL_DB
+
+        if self.use_local_db:
+            LOGGER.info(
+                "ExecutorAgent — SQLite mode: %s",
+                _SQLITE_PATH,
+            )
+        else:
+            _conn = connection_name or _cfg.database.connection_name
+            # Import lazily to avoid crashing when cml.data_v1 is not installed.
+            from ...data._pandas_backend import PandasEngine  # noqa: PLC0415
+
+            self._engine = PandasEngine(connection_name=_conn)
+            LOGGER.info(
+                "ExecutorAgent — PandasEngine (Iceberg) mode: %s", _conn
+            )
 
     def run(self, state: AgentState) -> AgentState:
-        """Execute the SQL query against the Iceberg table and return formatted results."""
+        """Execute the SQL query and return formatted results in the agent state.
+
+        Parameters
+        ----------
+        state : AgentState
+            Current pipeline state.  The ``sql_query`` key must contain the
+            validated SQL SELECT string.
+
+        Returns
+        -------
+        AgentState
+            Updated state with ``result_rows``, ``result_columns``,
+            ``result_summary``, ``error``, and a ``stages`` entry.
+        """
         sql: str = state.get("sql_query", "").strip()
 
-        LOGGER.info("ExecutorAgent — executing SQL on Iceberg: %s", sql)
+        LOGGER.info(
+            "ExecutorAgent — executing SQL (%s): %s",
+            "SQLite" if self.use_local_db else "Iceberg",
+            sql,
+        )
 
         if not sql:
             msg = "ExecutorAgent received an empty SQL query."
@@ -6461,7 +6609,9 @@ class ExecutorAgent:
                 stages=["executor_agent:empty_sql"],
             )
 
-        rows, columns, error_msg, limit_injected = self._execute(sql)
+        rows, columns, error_msg, limit_injected = (
+            self._execute_sqlite(sql) if self.use_local_db else self._execute_iceberg(sql)
+        )
 
         if error_msg:
             LOGGER.error("ExecutorAgent — SQL execution error: %s", error_msg)
@@ -6484,30 +6634,79 @@ class ExecutorAgent:
             stages=[f"executor_agent:ok rows={len(rows)}"],
         )
 
-    def _execute(
+    def _execute_sqlite(
         self,
         sql: str,
     ) -> tuple[list[dict[str, object]], list[str], str | None, bool]:
-        """
-        Run *sql* via ``PandasEngine.read_table()`` (Iceberg / Hive on Tez).
+        """Run *sql* against the local SQLite database file.
 
-        Returns ``(rows, column_names, error_message, limit_injected)``.
+        Parameters
+        ----------
+        sql : str
+            Validated SQL SELECT statement (bare table name, no schema prefix).
+
+        Returns
+        -------
+        tuple[list[dict[str, object]], list[str], str | None, bool]
+            ``(rows, column_names, error_message, limit_injected)``.
+            *error_message* is ``None`` on success.
         """
         effective_sql, limit_injected = _ensure_limit(sql)
         if limit_injected:
             LOGGER.info(
-                "ExecutorAgent — no LIMIT in SQL; auto-applied LIMIT %d (query.toml).",
+                "ExecutorAgent — no LIMIT in SQL; auto-applied LIMIT %d.",
                 _DEFAULT_LIMIT,
             )
-
         try:
-            df = self._engine.read_table(effective_sql)
-            # Trim to the hard ceiling
+            with sqlite3.connect(str(_SQLITE_PATH)) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(effective_sql)
+                raw_rows = cursor.fetchall()
+
+            col_names: list[str] = [desc[0].upper() for desc in cursor.description or []]
+            rows: list[dict[str, object]] = [
+                {col_names[i]: row[i] for i in range(len(col_names))}
+                for row in raw_rows
+            ]
+
+            if len(rows) > _MAX_DISPLAY_ROWS:
+                rows = rows[:_MAX_DISPLAY_ROWS]
+
+            return rows, col_names, None, limit_injected
+
+        except sqlite3.Error as exc:
+            return [], [], f"SQLite query error: {exc} | Query: {effective_sql}", False
+
+    def _execute_iceberg(
+        self,
+        sql: str,
+    ) -> tuple[list[dict[str, object]], list[str], str | None, bool]:
+        """Run *sql* via ``PandasEngine.read_table()`` (Iceberg / Hive on Tez).
+
+        Parameters
+        ----------
+        sql : str
+            Validated SQL SELECT statement using the fully-qualified table name.
+
+        Returns
+        -------
+        tuple[list[dict[str, object]], list[str], str | None, bool]
+            ``(rows, column_names, error_message, limit_injected)``.
+            *error_message* is ``None`` on success.
+        """
+        effective_sql, limit_injected = _ensure_limit(sql)
+        if limit_injected:
+            LOGGER.info(
+                "ExecutorAgent — no LIMIT in SQL; auto-applied LIMIT %d.",
+                _DEFAULT_LIMIT,
+            )
+        try:
+            df: pd.DataFrame = self._engine.read_table(effective_sql)
             if len(df) > _MAX_DISPLAY_ROWS:
                 df = df.iloc[:_MAX_DISPLAY_ROWS]
 
-            col_names: list[str] = list(df.columns)
-            rows: list[dict[str, object]] = df.to_dict(orient="records")
+            col_names = list(df.columns)
+            rows = df.to_dict(orient="records")
             return rows, col_names, None, limit_injected
 
         except Exception as exc:  # noqa: BLE001
@@ -6731,17 +6930,19 @@ FILE: src\dlh_ai\genai\nl2sql_agent\intent_checker.py
 genai/nl2sql_agent/intent_checker.py — Node 1 of the NL2SQL pipeline.
 
 Classifies whether the user question has clear enough intent to proceed.
-All user-facing messages are loaded from genai/prompt/intent_checker.yaml —
-no message strings are hardcoded in this file.
+All user-facing messages are loaded from ``genai/prompt/intent_checker.yaml``
+— no message strings are hardcoded in this file.
 
-Four checks (rule-based, no LLM):
+Five checks (rule-based, no LLM, evaluated in order):
+  0. Greeting — single-word or pure greeting input (hi, hello, hey, namaste …)
+     → static friendly reply, asks user to type a query.
   1. Empty question
   2. Disallowed action words (DELETE, DROP, INSERT …)
   3. Too short / meaningless input
   4. Vague / ambiguous phrasing
 
 Token-count thresholds are loaded at import time from ``[nl2sql]`` in
-``config.toml`` via :func:`~dlh_ai.utils.config.get_settings`.
+``config.toml`` via :func:`~dlh_ai.config.get_settings`.
 """
 
 import logging
@@ -6761,6 +6962,31 @@ _cfg = get_settings().nl2sql
 _MIN_MEANINGFUL_TOKENS: int = _cfg.min_meaningful_tokens
 _MIN_TOKEN_LEN: int = _cfg.min_token_len
 _RICH_QUESTION_THRESHOLD: int = _cfg.rich_question_threshold
+
+# Words that are recognised as pure greetings — no SQL intent.
+# The check fires only when the *entire* cleaned input is a subset of this set,
+# so "hi how many accounts" still passes through to the normal pipeline.
+_GREETING_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "hi",
+        "hello",
+        "hey",
+        "namaste",
+        "namaskar",
+        "greetings",
+        "howdy",
+        "hiya",
+        "yo",
+        "sup",
+        "whatsup",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "goodmorning",
+        "goodafternoon",
+        "goodevening",
+    }
+)
 
 _METRIC_TERMS: Final[frozenset[str]] = frozenset(
     {
@@ -6810,10 +7036,6 @@ _VAGUE_PHRASES: Final[frozenset[str]] = frozenset(
 _AMBIGUOUS_TOKENS: Final[frozenset[str]] = frozenset(
     {"this", "that", "those", "these", "it", "something"}
 )
-
-_MIN_MEANINGFUL_TOKENS: Final[int] = 3
-_MIN_TOKEN_LEN: Final[int] = 2
-_RICH_QUESTION_THRESHOLD: Final[int] = 3
 
 _STOP_WORDS: Final[frozenset[str]] = frozenset(
     {
@@ -6970,17 +7192,61 @@ _DISALLOWED_ACTION_WORDS: Final[frozenset[str]] = frozenset(
 
 
 class IntentChecker:
-    """
-    LangGraph node that classifies user intent.
+    """LangGraph node that classifies user intent (five rule-based checks, no LLM).
 
-    All messages sourced from intent_checker.yaml — edit that file to change
-    the wording shown to users without touching Python code.
+    Check order
+    -----------
+    0. **Greeting** — ``hi``, ``hello``, ``hey``, ``namaste`` etc. as the
+       *entire* input → static friendly reply, prompts user to ask a query.
+    1. **Empty** — blank input.
+    2. **Disallowed action** — destructive SQL keywords (DELETE, DROP …).
+    3. **Too short** — fewer than ``min_meaningful_tokens`` non-stop-word tokens.
+    4. **Vague / ambiguous** — pure vague phrase or unresolved pronoun.
+
+    All reply strings are sourced from ``intent_checker.yaml`` — edit that
+    file to change the wording shown to users without touching Python code.
     """
 
     def run(self, state: AgentState) -> AgentState:
-        """Classify intent through four sequential rule-based checks."""
+        """Classify intent through five sequential rule-based checks.
+
+        Parameters
+        ----------
+        state : AgentState
+            Current pipeline state.  Only ``question`` is read.
+
+        Returns
+        -------
+        AgentState
+            Updated state with ``interpreted_question``, ``intent_ok``,
+            ``clarification_needed``, and a ``stages`` entry.
+        """
         question: str = state.get("question", "").strip()
         LOGGER.info("IntentChecker — analysing: %r", question)
+
+        # ── Check 0: pure greeting ─────────────────────────────────────────
+        # Normalise to lowercase, strip punctuation, split on whitespace.
+        # If every token in the cleaned input is a known greeting word (or
+        # the whole stripped string matches a multi-word greeting phrase),
+        # return a friendly static reply without touching the LLM.
+        lower_stripped = question.lower().strip("?!., ")
+        greeting_tokens = {_PUNCT_STRIP.sub("", t) for t in lower_stripped.split() if t}
+        if greeting_tokens and greeting_tokens.issubset(_GREETING_WORDS):
+            LOGGER.info("IntentChecker — greeting detected: %r", question)
+            return AgentState(  # type: ignore[return-value]
+                interpreted_question=self._normalise(question),
+                intent_ok=False,
+                clarification_needed=get_prompt(
+                    _YAML,
+                    "messages",
+                    "greeting",
+                    default=(
+                        "Hello! 👋 Welcome to the SBI Compliance Chatbot.\n\n"
+                        "Please ask a compliance question to get started!"
+                    ),
+                ),
+                stages=["intent_checker:greeting"],
+            )
 
         # ── Check 1: empty question ────────────────────────────────────────
         if not question:
@@ -7111,14 +7377,20 @@ embed in its LLM prompt.  The authoritative schema comes from two sources:
    column with its exact Hive/Iceberg data type.
 
 No live database connection is made here — all introspection has been
-replaced with static metadata from the configuration sources above.  This is
-correct because the target store is an Iceberg table on Hive (not a local
-SQLite file) and schema reads against the live cluster are unnecessary.
+replaced with static metadata from the configuration sources above.
+
+The **target table reference** written to ``AgentState.db_path`` is chosen
+based on ``database.use_local_db`` in ``config.toml``:
+
+* ``use_local_db = true``  → bare table name (``COMP_TBL``) so the SQL Writer
+  generates plain SQLite-compatible SQL (no schema prefix).
+* ``use_local_db = false`` → fully-qualified Iceberg name
+  (``dev_feature_store.COMP_TBL``) for Hive on Tez.
 
 Configuration (header templates) is loaded from
-``genai/prompt/schema_checker.yaml``.  The target Iceberg table and bare
-table name are read from ``[nl2sql]`` in ``config.toml`` via
-:func:`~dlh_ai.utils.config.get_settings`.
+``genai/prompt/schema_checker.yaml``.  The target table and bare table name
+are read from ``[nl2sql]`` in ``config.toml`` via
+:func:`~dlh_ai.config.get_settings`.
 """
 
 import logging
@@ -7141,9 +7413,22 @@ _ICEBERG_SCHEMA_FILE = (
 )
 
 # Table identifiers loaded from config.toml once at import time.
-_nl2sql_cfg = get_settings().nl2sql
+_settings_cfg = get_settings()
+_nl2sql_cfg = _settings_cfg.nl2sql
+_db_cfg = _settings_cfg.database
+
+# When use_local_db is True the executor uses SQLite — the SQL Writer must
+# generate bare table references (e.g. ``FROM COMP_TBL``), not the fully-
+# qualified Iceberg name (``FROM dev_feature_store.COMP_TBL``).
+_USE_LOCAL_DB: bool = _db_cfg.use_local_db
 _ICEBERG_TABLE: str = _nl2sql_cfg.iceberg_table
 _TABLE_NAME: str = _nl2sql_cfg.compliance_table_name
+# The value written to AgentState.db_path — bare name for SQLite, fully-
+# qualified for Iceberg.
+_TARGET_TABLE: str = _TABLE_NAME if _USE_LOCAL_DB else _ICEBERG_TABLE
+
+# Short label for the SQLite file path used in the schema context header.
+_SQLITE_LABEL: str = _db_cfg.db_file
 
 # Pre-compiled pattern to extract  <col_name>  <TYPE>  from the DDL
 _COL_TYPE_RE = re.compile(
@@ -7180,40 +7465,73 @@ _ICEBERG_TYPES: dict[str, str] = _load_iceberg_types()
 
 
 class SchemaChecker:
-    """
-    LangGraph node — builds the Markdown schema context for the SQL Writer.
+    """LangGraph node — builds the Markdown schema context for the SQL Writer.
 
     The schema is constructed entirely from static config files:
-      - ``databases.toml``      → column business descriptions + few-shots
-      - ``iceberg_schema.txt``  → Hive/Iceberg column data types
+
+    * ``config.toml [databases]`` — column business descriptions and few-shots.
+    * ``data/iceberg_schema.txt`` — Hive / Iceberg column data types.
+
+    The ``db_path`` value written to the agent state is determined by
+    ``database.use_local_db`` in ``config.toml``:
+
+    * ``use_local_db = true``  → bare table name (``COMP_TBL``) for SQLite.
+    * ``use_local_db = false`` → fully-qualified name
+      (``dev_feature_store.COMP_TBL``) for Hive on Tez.
 
     Parameters
     ----------
-    iceberg_table : str
-        Fully qualified Iceberg table name written into ``db_path`` on the
-        state so downstream nodes (reviewer, etc.) know the target table.
-        Defaults to ``dev_feature_store.COMP_TBL``.
+    target_table : str, optional
+        Table reference written to ``AgentState.db_path``.  Defaults to the
+        value computed from ``config.toml`` at import time: bare name when
+        ``use_local_db = true``, fully-qualified name otherwise.
     """
 
-    def __init__(self, iceberg_table: str = _ICEBERG_TABLE) -> None:
-        self._iceberg_table = iceberg_table
+    def __init__(self, target_table: str = _TARGET_TABLE) -> None:
+        self._target_table = target_table
 
     def run(self, state: AgentState) -> AgentState:
-        """Build the Iceberg schema context string and inject it into state."""
+        """Build the schema context string and inject it into the agent state.
+
+        Parameters
+        ----------
+        state : AgentState
+            Current pipeline state; ``question`` or ``interpreted_question``
+            is used only for logging.
+
+        Returns
+        -------
+        AgentState
+            Updated state with ``db_path`` (the target table reference used
+            by the SQL Writer), ``schema_context`` (the Markdown block), and
+            a ``stages`` entry.
+        """
         question: str = state.get("interpreted_question", state.get("question", ""))
-        LOGGER.info("SchemaChecker — building Iceberg schema context for: %r", question)
+        LOGGER.info(
+            "SchemaChecker — building schema context for: %r (backend=%s, table=%s)",
+            question,
+            "SQLite" if _USE_LOCAL_DB else "Iceberg",
+            self._target_table,
+        )
 
         context = self._build_context()
 
-        LOGGER.info("SchemaChecker — using Iceberg table=%s", self._iceberg_table)
+        LOGGER.info("SchemaChecker — db_path set to %r", self._target_table)
         return AgentState(  # type: ignore[return-value]
-            db_path=self._iceberg_table,  # downstream nodes read this as the target table
+            db_path=self._target_table,  # SQL Writer reads this as the FROM target.
             schema_context=context,
-            stages=[f"schema_checker:table={self._iceberg_table}"],
+            stages=[f"schema_checker:table={self._target_table}"],
         )
 
     def _build_context(self) -> str:
-        """Build the Markdown schema context block for LLM injection."""
+        """Build the Markdown schema context block for LLM injection.
+
+        Returns
+        -------
+        str
+            Multi-line Markdown string containing the column type table,
+            business descriptions, table description, and few-shot examples.
+        """
         schema_header = get_prompt(
             _YAML, "messages", "schema_header", default="## Database: `{db_stem}`"
         )
@@ -7227,10 +7545,16 @@ class SchemaChecker:
             default="**Column descriptions for `{table_name}` (from databases.toml):**",
         )
 
+        db_stem = "local_sqlite" if _USE_LOCAL_DB else "dev_feature_store"
+        backend_note = (
+            f"SQLite — `{_SQLITE_LABEL}`"
+            if _USE_LOCAL_DB
+            else f"Iceberg — `{self._target_table}`"
+        )
         lines: list[str] = [
-            schema_header.format(db_stem="dev_feature_store"),  # type: ignore[arg-type]
+            schema_header.format(db_stem=db_stem),  # type: ignore[arg-type]
             "",
-            f"> Target Iceberg table: `{self._iceberg_table}`",
+            f"> Target table ({backend_note}): `{self._target_table}`",
             "",
         ]
 
@@ -8206,6 +8530,17 @@ FILE: src\dlh_ai\genai\prompt\intent_checker.yaml
 
 
 messages:
+  greeting: |
+    Hello! Welcome to the SBI Compliance Chatbot.
+
+    I can help you query the compliance database — try asking:
+    • "How many senior citizen accounts have KYC flag N?"
+    • "Show accounts in the Mumbai circle with balance above 100000."
+    • "List accounts whose maturity date is in December 2025."
+    • "Show top 10 accounts by end-of-day balance."
+
+    Please go ahead and ask your compliance question!
+
   empty_question: >-
     No question was provided. Please ask a compliance query,
     for example: "How many accounts have KYC flag N?"
