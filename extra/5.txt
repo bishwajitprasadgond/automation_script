@@ -81,60 +81,6 @@ FILE: .Rprofile
 options("spark.master" = "k8s://https://172.30.0.1:443")
 
 
-####################################################################################################
-FILE: .copier-answers.yml
-####################################################################################################
-
-
-_commit: v0.1-5-g6b23349
-_src_path: git@gitlab.dlhdevuat.sbi.bank.in:dlh-ai/cloudera-ai.git
-project_description: A data science and AI project for yono retail chatbot
-project_name: yono retail chatbot
-
-
-####################################################################################################
-FILE: .env.example
-####################################################################################################
-
-# YONO Retail RAG Chatbot — Environment Variables
-# ─────────────────────────────────────────────────────────────────────────────
-# Copy this file to .env and fill in the required values.
-# NEVER commit .env to version control.
-#
-# All variables use the "SECTION__FIELD" naming convention so that
-# pydantic-settings maps them directly into the nested Settings model.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Elasticsearch (REQUIRED) ──────────────────────────────────────────────────
-# API key for authenticating with the Elasticsearch cluster.
-# Obtain from the Elasticsearch Kibana console or cluster administrator.
-RAG__ELASTICSEARCH_API_KEY=<your-elasticsearch-api-key-here>
-
-# Optional host override (default is set in config.toml):
-# RAG__ELASTICSEARCH_HOST=https://prod-es-host:9201
-
-# Enable TLS cert verification in production:
-# RAG__VERIFY_CERTS=true
-
-# ── LLM — DLH self-hosted vLLM (REQUIRED) ────────────────────────────────────
-# API key for the DLH vLLM endpoint.
-# For unauthenticated endpoints use the literal string: EMPTY
-LLM__API_KEY=EMPTY
-
-# Optional overrides (defaults are set in config.toml):
-# LLM__MODEL_NAME=gemma-4-26b-a4b-it
-# LLM__BASE_URL=http://10.190.236.15:9000/api/v1
-# LLM__VERIFY_SSL=false
-# LLM__TEMPERATURE=0.2
-# LLM__MAX_TOKENS=1024
-# LLM__REQUEST_TIMEOUT=60.0
-
-# ── Common project (optional) ─────────────────────────────────────────────────
-# COMMON__PROJECT_ID=yono-chatbot-prod
-# COMMON__MLFLOW_EXPERIMENT_NAME=yono-retail-rag-v1
-
-# ── Logging (optional) ────────────────────────────────────────────────────────
-# LOGGING__LOG_LEVEL=INFO
 
 
 
