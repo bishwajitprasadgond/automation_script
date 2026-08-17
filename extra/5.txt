@@ -81,9 +81,6 @@ FILE: .Rprofile
 options("spark.master" = "k8s://https://172.30.0.1:443")
 
 
-
-
-
 ####################################################################################################
 FILE: .gitignore
 ####################################################################################################
@@ -1766,7 +1763,8 @@ def get_font_base64(font_path: Path) -> str | None:
         return None
 
 
-font_dir = _PROJECT_ROOT / "application" / "fonts"
+# Fonts sit alongside this file: src/dlh_ai/application/fonts/
+font_dir = Path(__file__).resolve().parent / "fonts"
 font_reg = get_font_base64(font_dir / "Urbanist-Regular.ttf")
 font_medium = get_font_base64(font_dir / "Urbanist-Medium.ttf")
 font_bold = get_font_base64(font_dir / "Urbanist-Bold.ttf")
@@ -2510,47 +2508,54 @@ def initialize_pipeline(model_name: str, base_url: str, api_key: str):
     Build and connect the full NL2SQL pipeline.
 
     Steps:
-      1. Copy default ModelSettings and override with user-supplied values.
+      1. Copy default ModelSettings and patch the nested dlh sub-settings
+         with the user-supplied base_url, api_key, and verify_ssl=False.
       2. Create a ModelLoaderService and call load() to init the HTTP client.
-      3. Call test_connection() - sends a tiny "Reply with OK." request.
+      3. Call test_connection() — sends a tiny "Reply with OK." request.
       4. Build the compiled LangGraph from build_nl2sql_graph().
       5. Wrap in a ComplianceProcessor and return (service, processor).
     """
     try:
-        # Start from defaults defined in utils/config.py ModelSettings
-        base_settings = get_settings().model.model_copy(deep=True)
+        settings = get_settings()
 
-        # Override only the values the user supplied in the form
-        model_settings = base_settings.model_copy(
+        # Deep-copy the base ModelSettings so we don't mutate the singleton.
+        base_model = settings.model.model_copy(deep=True)
+
+        # Patch the nested dlh sub-settings — api_key / base_url / verify_ssl
+        # are on LlmDlhSettings, not on ModelSettings directly.
+        patched_dlh = base_model.dlh.model_copy(
             update={
-                "provider": "dlh",
+                "base_url": base_url,
+                "api_key": api_key,
+                "verify_ssl": False,
+            }
+        )
+        model_settings = base_model.model_copy(
+            update={
                 "model_name": model_name,
-                "dlh_base_url": base_url,
-                "dlh_api_key": api_key,
-                "dlh_verify_ssl": True,
+                "dlh": patched_dlh,
             }
         )
 
-        # Create the HTTP client wrapper for the DLH inference server
+        # Initialise the LangChain ChatOpenAI client and verify the endpoint.
         model_service = ModelLoaderService(settings=model_settings)
-        model_service.load()  # initialises the OpenAI-compatible client
-        model_service.test_connection()  # sends "Reply with OK." to verify auth
+        model_service.load()
+        model_service.test_connection()
 
-        # Resolve the SQLite database path from settings
-        db_path = get_settings().database.db_path
-
-        # Build and compile the 6-node LangGraph StateGraph
+        # Build and compile the 6-node LangGraph StateGraph (Iceberg target;
+        # connection_name comes from [database] in config.toml via AppSettings).
         compiled_graph = build_nl2sql_graph(
-            model_service=model_service, db_path=db_path
+            model_service=model_service,
+            iceberg_table=settings.nl2sql.iceberg_table,
+            connection_name=settings.database.connection_name,
         )
 
-        # Wrap the graph in the thin orchestrator that maps API models ↔ AgentState
+        # Wrap the graph in the thin orchestrator that maps API models ↔ AgentState.
         processor = ComplianceProcessor(compiled_graph=compiled_graph)
 
         return model_service, processor
 
     except Exception as e:
-        # Log full traceback for debugging, then re-raise so the UI shows an error
         LOGGER.exception("Pipeline initialization failed")
         raise e
 
@@ -6541,12 +6546,10 @@ both connect to Iceberg directly.
 """
 
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
-
-if TYPE_CHECKING:
-    from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from ..core.model import ModelLoaderService
 from .executor_agent import ExecutorAgent
@@ -6611,7 +6614,7 @@ def build_nl2sql_graph(
     connection_name: str = "DLH-DEV-UAT - Hive on Tez",
     max_review_retries: int = 3,
     sqlglot_dialect: str = "hive",
-) -> CompiledStateGraph:  # type: ignore[name-defined]
+) -> CompiledStateGraph:
     """
     Construct and compile the six-node NL2SQL StateGraph.
 
@@ -6693,7 +6696,7 @@ def create_graph(
     connection_name: str | None = None,
     max_review_retries: int = 3,
     sqlglot_dialect: str = "hive",
-) -> CompiledStateGraph:  # type: ignore[name-defined]
+) -> CompiledStateGraph:
     """
     Convenience wrapper — iceberg_table and connection_name default to the
     values configured in AppSettings / PandasEngine.
@@ -8398,7 +8401,6 @@ Helpers
 * :func:`read_text`
 * :func:`resolve_project_path`
 * :func:`safe_dumps`
-* :func:`safe_json_loads`
 * :func:`safe_loads`
 * :func:`truncate`
 * :func:`write_text`
@@ -8446,7 +8448,6 @@ from .helpers import (
     read_text,
     resolve_project_path,
     safe_dumps,
-    safe_json_loads,
     safe_loads,
     truncate,
     write_text,
@@ -8493,7 +8494,6 @@ __all__: list[str] = [
     "read_text",
     "resolve_project_path",
     "safe_dumps",
-    "safe_json_loads",
     "safe_loads",
     "truncate",
     "write_text",
