@@ -1579,7 +1579,11 @@ class Settings(BaseSettings):
     llm: LlmSettings = Field(default_factory=LlmSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
-    model_config = SettingsConfigDict(env_nested_delimiter="__")
+    model_config = SettingsConfigDict(
+        env_nested_delimiter="__",
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
     @classmethod
     def settings_customise_sources(
@@ -2456,7 +2460,14 @@ def launch_yono_chatbot() -> None:
 
     # This file is at <project_root>/src/dlh_ai/genai/application/Launcher.py
     # so the project root is five levels up from here.
-    PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent.parent.parent
+    # ``__file__`` is undefined when this code runs inside a notebook/CML cell,
+    # so fall back to the known CML project path in that case.
+    try:
+        _THIS_FILE: Path = Path(__file__).resolve()
+    except NameError:
+        _THIS_FILE = Path("/home/cdsw/src/dlh_ai/genai/application/Launcher.py")
+
+    PROJECT_ROOT: Path = _THIS_FILE.parent.parent.parent.parent.parent
 
     # src/ must be on PYTHONPATH so uvicorn can import dlh_ai as a package.
     SRC_DIR: Path = PROJECT_ROOT / "src"
@@ -2465,7 +2476,7 @@ def launch_yono_chatbot() -> None:
     BACKEND_MODULE: str = "dlh_ai.genai.application.backend.main:app"
 
     # Absolute path to the Gradio UI script sitting next to this file.
-    UI_FILE: Path = Path(__file__).resolve().parent / "ui.py"
+    UI_FILE: Path = _THIS_FILE.parent / "ui.py"
 
     # Read ports from environment so CML / Docker can override them easily.
     BACKEND_PORT: str = os.environ.get("CB_BACKEND_PORT", "8008")
@@ -9180,6 +9191,13 @@ class HDFSClient:
         destination_path : str
             Local destination path.
 
+        Raises
+        ------
+        RuntimeError
+            Raised when the ``hdfs dfs -get`` command exits with a
+            non-zero status (e.g. Kerberos auth failure, missing path).
+            The underlying stderr output is included in the message.
+
         Examples
         --------
         >>> client = HDFSClient()
@@ -9195,7 +9213,16 @@ class HDFSClient:
         """
         # TODO - Ideally pyarrow.fs should be used but currently there is
         # a issue with auth & only hdfs cli is working
-        subprocess.run(["hdfs", "dfs", "-get", source_path, destination_path])
+        result = subprocess.run(
+            ["hdfs", "dfs", "-get", source_path, destination_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"'hdfs dfs -get {source_path} {destination_path}' failed "
+                f"with exit code {result.returncode}: {result.stderr.strip()}"
+            )
 
     def read_parquet_table(self, source_path: str) -> ds.FileSystemDataset:
         """Read parquet files from HDFS as a PyArrow dataset.
