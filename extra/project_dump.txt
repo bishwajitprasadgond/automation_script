@@ -190,6 +190,24 @@ Also present but unused: `src/api/models.py` (an older, stale duplicate
 of `dlh_ai/models.py` — nothing imports it; the FAQ/chat/cache index
 mappings in `jobs/index_creation_job.py` only reference it in docstrings).
 
+### New: the standalone UI + gateway, `application/` (not part of either surface)
+
+A third, unrelated `application/` folder lives at the **repo root**
+(sibling to `src/`) — `application/ui.py` + `application/Launcher.py`. Do
+not confuse this with Surface A's own, identically-named
+`src/dlh_ai/genai/application/ui.py` + `Launcher.py` described above; the
+two pairs of files share names but nothing else.
+
+`application/ui.py` is a self-contained FastAPI web UI and gateway proxy
+with **no import of `dlh_ai` or `api`** — it is configured entirely through
+environment variables (`ORCHESTRATOR_BASE_URL`, `ORCHESTRATOR_TIMEOUT_SECONDS`)
+so it can be deployed independently of the orchestrator it talks to.
+`application/Launcher.py` starts `rag_service` and `application/ui.py`
+together as one supervised process group — see
+[UI and gateway](#ui-and-gateway) below for how to run it, and
+[docs/08 — Target Microservices Architecture](docs/08-target-microservices-architecture.md)
+for how this layer fits the proposed target architecture.
+
 ## Setup
 
 Requires Python >=3.11 and [`uv`](https://docs.astral.sh/uv/).
@@ -239,7 +257,7 @@ uv run python api/security_service/main.py
 or via the uvicorn CLI (equivalent, adds `--reload` support):
 
 ```bash
-uv run uvicorn api.rag_service.main:app --app-dir src --port 8082 --reload
+uv run uvicorn api.rag_service.main:app --app-dir src --port 8522 --reload
 ```
 
 **Start order matters.** `rag_service`'s startup (`lifespan`) actively
@@ -262,6 +280,60 @@ uv run python jobs/faq_ingention_job.py      # 2. embed + bulk-index the FAQ CSV
 calls the embedding service over HTTP (`POST /api/v1/embedding/large`) to
 embed each FAQ row, so **`embd_service` must already be running** before
 you run it.
+
+## UI and gateway
+
+`application/ui.py` (repo root, sibling to `src/`) is a self-contained
+FastAPI web UI and gateway proxy in front of `rag_service` — see
+[Architecture](#architecture) above for how it differs from Surface A's
+identically-named files under `dlh_ai/genai/application/`. It imports
+nothing from `dlh_ai` or `api`; it is configured entirely through
+environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCHESTRATOR_BASE_URL` | `http://localhost:8082` | Base URL of the `rag_service` instance to proxy chat requests to |
+| `ORCHESTRATOR_TIMEOUT_SECONDS` | `60.0` | Timeout for the shared `httpx.AsyncClient` used to call it |
+| `PORT` | `8090` | Listen port, only read by the `python application/ui.py` direct-execution fallback (uvicorn and `Launcher.py` set the port via `--port`/`CDSW_APP_PORT` instead) |
+
+It exposes three routes:
+
+- `GET /` — the embedded single-page chat UI (dark theme, no build step,
+  session id generated client-side with `crypto.randomUUID()`).
+- `GET /health` — never raises; pings the orchestrator's `GET /` and always
+  returns HTTP 200 with
+  `{"status": "ok"|"degraded", "orchestrator_base_url": ..., "orchestrator_reachable": bool}`.
+- `POST /api/chat` — forwards `{session_id, message}` to
+  `POST {ORCHESTRATOR_BASE_URL}/api/v1/chat/completions` and returns the
+  reshaped `{session_id, answer, cached, sources}`; responds `503`
+  (`OrchestratorUnavailable`) if the orchestrator can't be reached at all,
+  or `502` (`OrchestratorError`) if it responds with an error status.
+
+Run it standalone, e.g. against an already-running `rag_service`:
+
+```bash
+uv run uvicorn application.ui:app --host 0.0.0.0 --port 8090
+```
+
+Or start the whole stack — every microservice plus this UI — with one
+command via `application/Launcher.py`, which launches `embd_service`,
+`reranker_service`, `security_service`, `rag_service`, and the UI as
+supervised subprocesses in that order, polls each one's `GET /` health
+check before starting the next dependent service, and stops everything
+together on `Ctrl+C` or if any of them crashes:
+
+```bash
+uv run python application/Launcher.py
+```
+
+`embd_service`/`reranker_service`/`security_service` are started on the
+ports already configured in `config.toml` (see
+[Configuration](#configuration)) — no separate env vars for those.
+`rag_service`'s port is `RAG_SERVICE_PORT` if set, else `config.toml`'s
+`rag_api.rag_service_port`; the UI's port is `CDSW_APP_PORT` (default
+`8100` — the port variable a CML/CDSW runtime injects automatically).
+`Launcher.py` wires `ORCHESTRATOR_BASE_URL` for the UI itself, so no manual
+env setup is needed for this path.
 
 ## The `chat_completions` flow
 
@@ -345,7 +417,7 @@ in `config.toml` already point at `keys/rag_private_key.pem` /
 | `feature_flags` | `enable_reranking`, `enable_llm_cache`, `enable_chat_history` | Toggle 3 `chat_completions` pipeline steps in `rag_service` on/off — see [docs/API-REFERENCE.md](docs/API-REFERENCE.md#feature-flags-configtoml) |
 | `feature_flags` | `max_history_turns` | Caps prior turns included in the prompt (`HistoryHandler._build_history`) |
 | `feature_flags` | `enable_guardrails` | Master switch for `GuardrailService` (`InputGuardrailHandler`/`OutputGuardrailHandler`) — off by default |
-| `guardrails` | `pii_entities`, `enable_pii_redaction`, `enable_profanity_filter`, `grounding_threshold` | Live `GuardrailService` behavior when `enable_guardrails=true` |
+| `guardrails` | `pii_entities`, `enable_preprocessing`, `enable_pii_redaction`, `enable_profanity_filter`, `grounding_threshold` | Live `GuardrailService` behavior when `enable_guardrails=true`; `enable_preprocessing` toggles step 0 of `validate_input` (language/clarity checks, acronym expansion) — see [docs/API-REFERENCE.md](docs/API-REFERENCE.md#feature-flags-configtoml) |
 | `guardrails` | `enable_toxicity_filter`, `toxicity_threshold`, `detoxify_checkpoint_path` | Reserved for a future toxicity filter — not read by any code yet |
 
 Note the split Elasticsearch connection config: `common.elasticsearch_*` is
@@ -5281,24 +5353,45 @@ wheels = [
 FILE: application\Launcher.py
 ####################################################################################################
 
+# noqa: N999
+# Filename intentionally matches the legacy launcher's PascalCase convention
+# (src/dlh_ai/genai/application/Launcher.py) rather than PEP 8's lowercase
+# module-naming rule - this file is a script entry point, never imported.
 """YONO Retail RAG Chatbot - process launcher.
 
-Starts the orchestrator (``api.rag_service.main:app``, under ``src/``) and
-the UI/gateway (``application/ui.py``) as separate uvicorn sub-processes and
-keeps them both alive until interrupted. This is the intended container
-entry point: it launches the backend and the UI together as one process
-group, the same role the legacy launcher
-(``src/dlh_ai/genai/application/Launcher.py``) played for Surface A - but
-pointed at the real orchestrator instead of a thin proxy, since
-``application/ui.py`` already talks to it directly.
+Starts every microservice (``embd_service``, ``reranker_service``,
+``security_service``, the ``rag_service`` orchestrator) plus the UI/gateway
+(``application/ui.py``) as separate uvicorn sub-processes, in dependency
+order, and supervises all of them until interrupted. This is the intended
+container entry point: one process group for the whole suite, the same role
+the legacy launcher (``src/dlh_ai/genai/application/Launcher.py``) played
+for Surface A - but pointed at the real services instead of a thin proxy.
+
+Start order (``embd_service``/``reranker_service`` load models from HDFS and
+can take a while; ``rag_service``'s own startup health-checks both of them,
+so it refuses to come up if started too early - see
+``docs/07-deployment-diagram.md``):
+
+1. ``embd_service``, ``reranker_service`` - each polled on ``GET /`` until
+   healthy or ``SERVICE_READINESS_TIMEOUT_SECONDS`` elapses.
+2. ``security_service`` - no dependency on, or dependents among, the above;
+   started but not waited on.
+3. ``rag_service`` (the orchestrator) - polled the same way.
+4. ``application/ui.py`` - started last, once the orchestrator is healthy.
+
+Any service that crashes on launch, or never becomes healthy in time, aborts
+startup and terminates every already-started process.
 
 Project layout (relative to this file)
 ---------------------------------------
 application/
     Launcher.py   <- this file
-    ui.py         <- FastAPI UI / gateway proxy (one sub-process)
+    ui.py         <- FastAPI UI / gateway proxy
 src/
-    api/rag_service/main.py   <- FastAPI orchestrator (the other sub-process)
+    api/embd_service/main.py      <- embedding service
+    api/reranker_service/main.py  <- reranker service
+    api/security_service/main.py <- security service
+    api/rag_service/main.py       <- FastAPI orchestrator
 
 Run:
     python application/Launcher.py
@@ -5309,112 +5402,255 @@ CDSW_APP_PORT : str
     TCP port for the UI server. Defaults to "8100".
     In CML, this variable is injected automatically by the platform.
 RAG_SERVICE_PORT : str
-    TCP port for the orchestrator (``rag_service``). Defaults to "8082",
-    matching its documented default in the main README.
+    TCP port for the orchestrator (``rag_service``). Defaults to
+    ``config.toml``'s ``rag_api.rag_service_port`` if unset.
+SERVICE_READINESS_TIMEOUT_SECONDS : str
+    Max seconds to wait for ``embd_service``/``reranker_service``/
+    ``rag_service`` to report healthy before aborting startup. Defaults to
+    "120".
+
+``embd_service``/``reranker_service``/``security_service`` read their own
+ports from ``src/config.toml`` (``embedding_api``/``reranker_api``/
+``security_api`` sections) - no separate env var for those, so the port
+this launcher starts them on always matches the port ``rag_service``'s own
+health checks (``src/api/utils.py``) expect to reach them on.
 """
 
 import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+def _find_project_root() -> Path:
+    """Locate the repo root, tolerant of an unexpected starting CWD.
+
+    CML Applications don't guarantee the process starts in the project
+    directory the way Sessions/Jobs do - if `__file__` arrives relative and
+    the CWD is off by one level, `.resolve()` silently anchors to the wrong
+    place. `__file__` is also undefined entirely when this module is pasted
+    into a notebook/IPython cell instead of run as a script (`python
+    application/Launcher.py`) - `globals().get(...)` avoids a NameError in
+    that case. Fall back to CML's own well-known project mount, then the
+    plain CWD, before giving up.
+    """
+    here = globals().get("__file__")
+    candidates = [
+        *([Path(here).resolve().parent.parent] if here else []),
+        Path("/home/cdsw"),
+        Path.cwd(),
+    ]
+    for candidate in candidates:
+        if (candidate / "src" / "api" / "rag_service" / "main.py").exists():
+            return candidate
+    return candidates[0]
+
+
+PROJECT_ROOT = _find_project_root()
 SRC_ROOT = PROJECT_ROOT / "src"
+
+# `dlh_ai` lives under src/, which isn't guaranteed to already be on
+# sys.path for every way this script might get invoked - add it explicitly
+# rather than relying on however this environment happened to be set up.
+sys.path.insert(0, str(SRC_ROOT))
+
+from dlh_ai.config import get_settings  # noqa: E402
+
 UI_MODULE = "application.ui:app"
 BACKEND_MODULE = "api.rag_service.main:app"
-BACKEND_STARTUP_DELAY_SECONDS = 15
+EMBD_MODULE = "api.embd_service.main:app"
+RERANKER_MODULE = "api.reranker_service.main:app"
+SECURITY_MODULE = "api.security_service.main:app"
+
+READINESS_TIMEOUT_SECONDS = float(
+    os.environ.get("SERVICE_READINESS_TIMEOUT_SECONDS", "120")
+)
+READINESS_POLL_INTERVAL_SECONDS = 2.0
+
+
+@dataclass
+class ServiceSpec:
+    """One uvicorn sub-process this launcher spawns and supervises."""
+
+    name: str  # human-readable label for printed progress/error lines
+    module: str  # "<package>.<module>:app" - the uvicorn import string
+    port: str  # TCP port, as a string (matches the uvicorn --port CLI arg)
+    entry_path: Path  # source file checked for existence up front
+    host: str = "127.0.0.1"
+    app_dir: Path | None = SRC_ROOT  # passed to uvicorn's --app-dir when set
+    env: dict[str, str] | None = None  # extra subprocess env; None = inherit
+    wait_for_ready: bool = True  # poll GET / before moving on to the next spec
+
+
+def _terminate_all(procs: list[subprocess.Popen]) -> None:
+    """Terminate every process that was actually started and hasn't already exited."""
+    for proc in procs:
+        if proc.poll() is None:
+            proc.terminate()
+
+
+def _wait_until_ready(proc: subprocess.Popen, port: str, timeout: float) -> bool:
+    """Poll ``GET http://127.0.0.1:{port}/`` until it answers 200, ``proc`` exits, or ``timeout`` elapses.
+
+    Every ``api/*`` service serves ``GET /`` as a 200-on-success health
+    check only once its FastAPI ``lifespan`` startup has finished - an ASGI
+    server doesn't accept any HTTP traffic, health check or otherwise,
+    until that step completes. So a 200 here is a reliable proxy for "this
+    service (and any model it loads from HDFS) is actually ready", not just
+    "the process exists".
+    """
+    url = f"http://127.0.0.1:{port}/"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False  # already exited - no point waiting further
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                if response.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass  # not accepting connections yet - normal while still starting
+        time.sleep(READINESS_POLL_INTERVAL_SECONDS)
+    return False
 
 
 def launch_yono_chatbot() -> None:
-    """Launch the YONO Retail orchestrator and UI together, and supervise both."""
-    backend_port = os.environ.get("RAG_SERVICE_PORT", "8082")
-    ui_port = os.environ.get("CDSW_APP_PORT", "8100")
-
+    """Launch every YONO Retail microservice plus the UI, in dependency order, and supervise all of them until interrupted."""
     print("\nChecking environment...")
 
-    if not (SRC_ROOT / "api" / "rag_service" / "main.py").exists():
-        print(f" X ERROR: orchestrator entry point not found under {SRC_ROOT}")
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        print(f" X ERROR: failed to load configuration from {SRC_ROOT / 'config.toml'}: {exc}")
         return
-    if not (PROJECT_ROOT / "application" / "ui.py").exists():
-        print(f" X ERROR: UI entry point not found under {PROJECT_ROOT / 'application'}")
-        return
+
+    embd_port = str(settings.embedding_api.embedding_service_port)
+    reranker_port = str(settings.reranker_api.reranker_service_port)
+    security_port = str(settings.security_api.security_service_port)
+    # Env var still wins if set (back-compat); default now tracks
+    # config.toml instead of a hardcoded literal that had already drifted.
+    backend_port = os.environ.get(
+        "RAG_SERVICE_PORT", str(settings.rag_api.rag_service_port)
+    )
+    ui_port = os.environ.get("CDSW_APP_PORT", "8100")
 
     # The UI proxies to the orchestrator over HTTP - point it at the
     # instance this launcher is about to start.
     ui_env: dict[str, str] = os.environ.copy()
     ui_env["ORCHESTRATOR_BASE_URL"] = f"http://127.0.0.1:{backend_port}"
 
-    print("Starting YONO Retail Chatbot Suite...")
+    specs = [
+        ServiceSpec(
+            "embd_service",
+            EMBD_MODULE,
+            embd_port,
+            SRC_ROOT / "api" / "embd_service" / "main.py",
+        ),
+        ServiceSpec(
+            "reranker_service",
+            RERANKER_MODULE,
+            reranker_port,
+            SRC_ROOT / "api" / "reranker_service" / "main.py",
+        ),
+        ServiceSpec(
+            "security_service",
+            SECURITY_MODULE,
+            security_port,
+            SRC_ROOT / "api" / "security_service" / "main.py",
+            wait_for_ready=False,  # no dependency, nothing waits on it either
+        ),
+        ServiceSpec(
+            "orchestrator (rag_service)",
+            BACKEND_MODULE,
+            backend_port,
+            SRC_ROOT / "api" / "rag_service" / "main.py",
+        ),
+        ServiceSpec(
+            "UI server",
+            UI_MODULE,
+            ui_port,
+            PROJECT_ROOT / "application" / "ui.py",
+            host="0.0.0.0",
+            app_dir=None,
+            env=ui_env,
+            wait_for_ready=False,  # nothing starts after it
+        ),
+    ]
 
-    backend_proc: subprocess.Popen | None = None
-    ui_proc: subprocess.Popen | None = None
-
-    try:
-        # --- 1. START ORCHESTRATOR ---
-        print(f" Launching orchestrator (rag_service) on port {backend_port}...")
-        backend_proc = subprocess.Popen(
-            [
-                sys.executable, "-m", "uvicorn",
-                BACKEND_MODULE,
-                "--app-dir", str(SRC_ROOT),
-                "--host", "127.0.0.1",
-                "--port", backend_port,
-            ],
-            cwd=PROJECT_ROOT,
-        )
-
-        # Give the orchestrator time to run its fail-fast startup health
-        # checks (embedding service, Elasticsearch, LLM endpoint, reranker).
-        print(
-            f" Waiting {BACKEND_STARTUP_DELAY_SECONDS} seconds for the orchestrator "
-            "to initialize..."
-        )
-        time.sleep(BACKEND_STARTUP_DELAY_SECONDS)
-
-        if backend_proc.poll() is not None:
-            print("\n X ERROR: orchestrator crashed during startup. Check logs above.")
+    for spec in specs:
+        if not spec.entry_path.exists():
+            print(f" X ERROR: {spec.name} entry point not found at {spec.entry_path}")
             return
 
-        # --- 2. START UI ---
-        print(f" Launching UI server on port {ui_port}...")
-        ui_proc = subprocess.Popen(
-            [
-                sys.executable, "-m", "uvicorn",
-                UI_MODULE,
-                "--host", "0.0.0.0",
-                "--port", ui_port,
-            ],
-            cwd=PROJECT_ROOT,
-            env=ui_env,
-        )
+    print("Starting YONO Retail Chatbot Suite...")
+
+    procs: list[subprocess.Popen] = []
+    try:
+        for spec in specs:
+            print(f" Launching {spec.name} on port {spec.port}...")
+            cmd = [sys.executable, "-m", "uvicorn", spec.module]
+            if spec.app_dir is not None:
+                cmd += ["--app-dir", str(spec.app_dir)]
+            cmd += ["--host", spec.host, "--port", spec.port]
+
+            proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT, env=spec.env)
+            procs.append(proc)
+
+            if proc.poll() is not None:
+                print(
+                    f"\n X ERROR: {spec.name} crashed immediately on launch. "
+                    "Check logs above."
+                )
+                _terminate_all(procs)
+                return
+
+            if spec.wait_for_ready:
+                print(
+                    f" Waiting up to {READINESS_TIMEOUT_SECONDS:.0f}s for "
+                    f"{spec.name} to report healthy..."
+                )
+                if not _wait_until_ready(proc, spec.port, READINESS_TIMEOUT_SECONDS):
+                    reason = (
+                        "crashed while starting up"
+                        if proc.poll() is not None
+                        else f"did not report healthy within {READINESS_TIMEOUT_SECONDS:.0f}s"
+                    )
+                    print(f"\n X ERROR: {spec.name} {reason}. Check logs above.")
+                    _terminate_all(procs)
+                    return
+                print(f" {spec.name} is healthy.")
 
         print("\n" + "=" * 60)
         print(" YONO RETAIL CHATBOT - SYSTEMS STARTED")
+        print(f"Embedding API     : http://127.0.0.1:{embd_port}")
+        print(f"Reranker API      : http://127.0.0.1:{reranker_port}")
+        print(f"Security API      : http://127.0.0.1:{security_port}")
         print(f"Orchestrator API  : http://127.0.0.1:{backend_port}")
         print(f"Orchestrator Docs : http://127.0.0.1:{backend_port}/docs")
         print(f"Chatbot UI        : http://127.0.0.1:{ui_port}")
         print("=" * 60)
         print("\n Use the platform-provided link for the UI port to open the chatbot.")
-        print(" Press Ctrl+C to stop both servers.\n")
+        print(" Press Ctrl+C to stop all servers.\n")
 
-        # Keep the main thread alive, watching both sub-processes.
+        # Keep the main thread alive, watching every sub-process.
         while True:
             time.sleep(1)
-            if backend_proc.poll() is not None:
-                print("\n ORCHESTRATOR CRASHED! Check terminal logs above.")
-                break
-            if ui_proc.poll() is not None:
-                print("\n UI SERVER CRASHED! Check terminal logs above.")
+            dead = next(
+                (spec for spec, proc in zip(specs, procs) if proc.poll() is not None),
+                None,
+            )
+            if dead is not None:
+                print(f"\n {dead.name} crashed! Check terminal logs above.")
                 break
 
     except KeyboardInterrupt:
         print("\nShutting down YONO Chatbot...")
     finally:
-        if backend_proc is not None:
-            backend_proc.terminate()
-        if ui_proc is not None:
-            ui_proc.terminate()
+        _terminate_all(procs)
         print(" All processes stopped.")
 
 
@@ -5461,7 +5697,9 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("application.ui")
 
 ORCHESTRATOR_BASE_URL = os.environ.get("ORCHESTRATOR_BASE_URL", "http://localhost:8082")
-ORCHESTRATOR_TIMEOUT_SECONDS = float(os.environ.get("ORCHESTRATOR_TIMEOUT_SECONDS", "60.0"))
+ORCHESTRATOR_TIMEOUT_SECONDS = float(
+    os.environ.get("ORCHESTRATOR_TIMEOUT_SECONDS", "60.0")
+)
 
 
 class FaqVersionRef(BaseModel):
@@ -5506,7 +5744,9 @@ app = FastAPI(
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.exception("unhandled error while processing %s %s", request.method, request.url.path)
+    logger.exception(
+        "unhandled error while processing %s %s", request.method, request.url.path
+    )
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={"error": exc.__class__.__name__, "detail": str(exc)},
@@ -5574,7 +5814,9 @@ async def chat(
 
     if response.status_code >= 400:
         logger.warning(
-            "orchestrator returned %s for session %s", response.status_code, request.session_id
+            "orchestrator returned %s for session %s",
+            response.status_code,
+            request.session_id,
         )
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -5987,22 +6229,22 @@ llm_max_tokens = 1024
 llm_request_timeout = 60.0
 
 [embedding_api]
-embedding_service_base_url = ""
+embedding_service_base_url = "http://127.0.0.1:8501"
 embedding_service_port = 8501
 embedding_service_small_model_path = "/dev/aiml/models/sentence-transformers/all-MiniLM-L6-v2"
 embedding_service_large_model_path = "/dev/aiml/models/google/embeddinggemma-300m"
 
 [rag_api]
-rag_service_base_url = ["", ""] # dummy
+rag_service_base_url = "" # dummy
 rag_service_port = 8522 # dummy
 
 [reranker_api]
-reranker_service_base_url = "http://localhost:8083"
+reranker_service_base_url = "http://127.0.0.1:8083"
 reranker_service_port = 8083
 reranker_service_model_path = "<hdfs-path-to-cross-encoder-model>"
 
 [security_api]
-security_service_base_url = "http://localhost:8084"
+security_service_base_url = "http://127.0.0.1:8084"
 security_service_port = 8084
 security_rsa_private_key_path = "keys/rag_private_key.pem"
 security_rsa_public_key_path = "keys/rag_public_key.pem"
@@ -6021,9 +6263,9 @@ llm_cache_index_name = "llm_cache_knowledge_base_test"
 embedding_dimension = 786
 
 [feature_flags]
-enable_reranking = true
-enable_llm_cache = true
-enable_chat_history = true
+enable_reranking = false
+enable_llm_cache = false
+enable_chat_history = false
 max_history_turns = 5
 enable_guardrails = false   # master switch; requires better-profanity/detoxify/langchain-core installed
 
@@ -7028,7 +7270,10 @@ async def lifespan(app: FastAPI):
         await check_llm_service_health(http_client)
         await check_reranker_service_health(http_client)
 
-        guardrail_service: GuardrailService | None = None
+        # Quoted deliberately: GuardrailService is only bound under
+        # TYPE_CHECKING / the deferred import below, so an unquoted
+        # annotation would raise NameError at runtime.
+        guardrail_service: "GuardrailService | None" = None  # noqa: UP037
         if settings.feature_flags.enable_guardrails:
             from dlh_ai.genai.rag import (
                 GuardrailService,  # deferred: only needed when the flag is on
@@ -7623,7 +7868,7 @@ class EmbeddingApiService(BaseModel):
 
 
 class RAGApiService(BaseModel):
-    rag_service_base_url: list[str]
+    rag_service_base_url: str
     rag_service_port: int
 
 
@@ -10569,7 +10814,7 @@ async def _exception_handler(request: Request, exc: Exception) -> JSONResponse:
 @app.get("/health", tags=["Operations"])
 async def health_check(request: Request) -> JSONResponse:
     """Report whether the real rag_service backend is reachable."""
-    rag_base_url = get_settings().rag_api.rag_service_base_url[0]
+    rag_base_url = get_settings().rag_api.rag_service_base_url
     try:
         resp = await request.app.state.http_client.get(f"{rag_base_url}/")
         resp.raise_for_status()
@@ -10587,7 +10832,7 @@ async def health_check(request: Request) -> JSONResponse:
 @app.post("/api/v1/chat", tags=["Chat"])
 async def chat(payload: ChatRequest, request: Request) -> JSONResponse:
     """Forward a legacy chat request to rag_service's chat_completions."""
-    rag_base_url = get_settings().rag_api.rag_service_base_url[0]
+    rag_base_url = get_settings().rag_api.rag_service_base_url
     session_id = payload.session_id or str(uuid.uuid4())
 
     resp = await request.app.state.http_client.post(
@@ -12004,7 +12249,9 @@ def _detect_pii(text: str, entities: list[str]) -> list[_PiiMatch]:
 
     # Longest match first; ties broken by the caller-supplied priority order.
     priority = {name: i for i, name in enumerate(entities)}
-    candidates.sort(key=lambda m: (-len(m.text), priority.get(m.entity_type, len(entities))))
+    candidates.sort(
+        key=lambda m: (-len(m.text), priority.get(m.entity_type, len(entities)))
+    )
 
     accepted: list[_PiiMatch] = []
     covered: list[tuple[int, int]] = []
@@ -12037,12 +12284,11 @@ def _redact_pii(text: str, matches: list[_PiiMatch]) -> str:
     parts: list[str] = []
     last = 0
     for m in matches:
-        parts.append(text[last : m.start])   # text before this PII span
-        parts.append(f"<{m.entity_type}>")   # the placeholder label
-        last = m.end                          # skip past the matched span
-    parts.append(text[last:])                 # remainder after last match
+        parts.append(text[last : m.start])  # text before this PII span
+        parts.append(f"<{m.entity_type}>")  # the placeholder label
+        last = m.end  # skip past the matched span
+    parts.append(text[last:])  # remainder after last match
     return "".join(parts)
-
 
 
 # Prompt-injection patterns - regex, compiled once at import time
@@ -12104,11 +12350,51 @@ def _tokenize(text: str) -> set[str]:
 
 _STOPWORDS: frozenset[str] = frozenset(
     {
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "to", "of", "and", "or", "in", "on", "at", "for", "with", "as",
-        "by", "this", "that", "it", "you", "your", "i", "we", "can", "will",
-        "please", "from", "if", "not", "no", "do", "does", "did", "have",
-        "has", "had", "my", "me", "us", "our",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "to",
+        "of",
+        "and",
+        "or",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "as",
+        "by",
+        "this",
+        "that",
+        "it",
+        "you",
+        "your",
+        "i",
+        "we",
+        "can",
+        "will",
+        "please",
+        "from",
+        "if",
+        "not",
+        "no",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "my",
+        "me",
+        "us",
+        "our",
     }
 )
 
@@ -12203,7 +12489,7 @@ class GuardrailService:
 
         logger.info("GuardrailService initialised (heuristic-only, no model load)")
 
-    # Public API 
+    # Public API
 
     def validate_input(self, request: ChatRequest) -> ChatRequest:
         """Run all input guardrails and return a (possibly redacted) safe request.
@@ -12313,9 +12599,7 @@ class GuardrailService:
         state = self._apply_disclaimer(state)
         return state.response
 
-    
     # Input checks
-
 
     def _preprocess(self, request: ChatRequest) -> ChatRequest:
         # Skip this step entirely when the feature flag is off - the raw
@@ -12387,9 +12671,7 @@ class GuardrailService:
             )
         return request
 
-    
     # Output checks
-    
 
     def _check_grounding(self, state: _OutputState) -> _OutputState:
         # Compute the lexical overlap ratio between the answer and the
@@ -15780,7 +16062,7 @@ class CAIClient:
         """
         job_run_config = self._job_run_template(job_id=job_id)
         run = self.client.create_job_run(
-            job_run_config, job_id=job_id, project_id=setting.common.project_id
+            job_run_config, job_id=job_id, project_id=self.project_id
         )
         logger.info(f"successfully created job run {run.id}")
         return run
