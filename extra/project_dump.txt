@@ -2,7 +2,7 @@
 PROJECT STRUCTURE
 ====================================================================================================
 
-v5.0/
+v5.2/
     |-- .Rprofile
     |-- .bash_history
     |-- .copier-answers.yml
@@ -36,6 +36,7 @@ v5.0/
         |-- config.toml
         |-- api/
             |-- __init__.py
+            |-- auth.py
             |-- utils.py
             |-- embd_service/
                 |-- main.py
@@ -38434,6 +38435,9 @@ llm_temperature = 0.2
 llm_max_tokens = 1024
 llm_request_timeout = 60.0
 
+[api_auth]
+token_file = "creds/api.key"
+
 [embedding_api]
 embedding_service_base_url = "https://embedding-service.cai.apps.ck01.dlhdevuat.sbi.bank.in"
 embedding_service_port = 8501
@@ -38492,6 +38496,68 @@ FILE: src\api\__init__.py
 ####################################################################################################
 
 
+
+
+####################################################################################################
+FILE: src\api\auth.py
+####################################################################################################
+
+from functools import lru_cache
+from pathlib import Path
+import secrets
+
+from fastapi import HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from dlh_ai.config import get_settings
+
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _key_file_path() -> Path:
+    configured_path = Path(get_settings().api_auth.token_file)
+    if configured_path.is_absolute():
+        return configured_path
+
+    candidates = (
+        Path.cwd() / configured_path,
+        Path(__file__).resolve().parents[2] / configured_path,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+@lru_cache(maxsize=1)
+def _expected_token() -> str:
+    key_file = _key_file_path()
+    try:
+        token = key_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"API bearer token file not readable: {key_file}") from exc
+    if not token:
+        raise RuntimeError(f"API bearer token file is empty: {key_file}")
+    return token
+
+
+def require_bearer_token(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+) -> None:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A bearer token is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not secrets.compare_digest(credentials.credentials, _expected_token()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 ####################################################################################################
@@ -38620,16 +38686,18 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from about_time import about_time
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from scalar_fastapi import get_scalar_api_reference
 
 from dlh_ai.config import get_settings
 from dlh_ai.models import EmbedddingResponse, EmbeddingRequest
 from dlh_ai.utils import HDFSClient
+from api.auth import require_bearer_token
 
 
 logger = logging.getLogger("dlh_ai")
+logger.setLevel(logging.DEBUG)
 settings = get_settings()
 
 SMALL_EMBEDDING_MODEL_PATH = settings.embedding_api.embedding_service_small_model_path
@@ -38666,6 +38734,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
+    dependencies=[Depends(require_bearer_token)],
 )
 
 
@@ -38680,11 +38749,7 @@ async def _encode_texts(model, texts: list[str]) -> list[list[float]]:
 @app.middleware("http")
 async def _log_request_information(request: Request, call_next):
     # Reconstruct the path and query string without sensitive data
-    path_and_query_url = (
-        f"{request.url.path}?{request.query_params}"
-        if request.query_params
-        else request.url.path
-    )
+    path_and_query_url = request.url.path
 
     # tracking time taken by request to be fulfilled
     with about_time() as t:  # type: ignore
@@ -38716,16 +38781,11 @@ async def _internal_scalar_html():
     )
 
 
-@app.get("/", status_code=200)
-async def _index():
+@app.get("/healthz", status_code=200)
+async def health_check():
     """API Health check"""
-    return {
-        "message": "Yono Chatbot Embedding Service is up and running",
-        "models": {
-            "small": SMALL_EMBEDDING_MODEL_PATH,
-            "large": LARGE_EMBEDDING_MODEL_PATH,
-        },
-    }
+    logger.info("health check passed for embedding service")
+    return {"status": "ok", "service": "embedding"}
 
 
 @app.post("/api/v1/embedding/small", response_model=EmbedddingResponse)
@@ -38757,10 +38817,11 @@ def start_server() -> None:
             )
         ),
         access_log=False,
-        log_level="info",
+        log_level="debug",
     )
 
     _uvicorn_server = uvicorn.Server(config)
+    logger.info("starting embedding service on port %s", config.port)
 
     try:
         loop = asyncio.get_running_loop()
@@ -39379,6 +39440,7 @@ from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from scalar_fastapi import get_scalar_api_reference
 from api.rag_service.chat_pipeline import ChatContext, ChatHandler, build_chat_pipeline
+from api.auth import require_bearer_token
 from api.rag_service.dependency import (
     get_chat_pipeline,
     get_es_ops,
@@ -39414,6 +39476,7 @@ if TYPE_CHECKING:
     from dlh_ai.genai.rag import GuardrailService
 
 logger = logging.getLogger("dlh_ai")
+logger.setLevel(logging.DEBUG)
 settings = get_settings()
 
 # Global instance
@@ -39488,15 +39551,12 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
+    dependencies=[Depends(require_bearer_token)],
 )
 
 @app.middleware("http")
 async def _log_request_information(request: Request, call_next):
-    path_and_query_url = (
-        f"{request.url.path}?{request.query_params}"
-        if request.query_params
-        else request.url.path
-    )
+    path_and_query_url = request.url.path
     with about_time() as t:  # type: ignore
         logger.info(f"received request --> {request.method} {path_and_query_url}")
         response = await call_next(request)
@@ -39527,10 +39587,11 @@ async def _internal_scalar_html():
         title=app.title,
     )
 
-@app.get("/", status_code=200)
-async def _index():
+@app.get("/healthz", status_code=200)
+async def health_check():
     """API Health check"""
-    return {"message": "Yono Chatbot RAG Service is available"}
+    logger.info("health check passed for RAG service")
+    return {"status": "ok", "service": "rag"}
 
 @app.get("/api/v1/search/vector")
 async def search_vector(
@@ -39589,9 +39650,10 @@ def start_server() -> None:
         host="127.0.0.1",
         port=int(os.environ.get("CDSW_APP_PORT", settings.rag_api.rag_service_port)),
         access_log=False,
-        log_level="info",
+        log_level="debug",
     )
     _uvicorn_server = uvicorn.Server(config)
+    logger.info("starting RAG service on port %s", config.port)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -39637,11 +39699,13 @@ from scalar_fastapi import get_scalar_api_reference
 from sentence_transformers import CrossEncoder
 
 from api.reranker_service.dependency import get_reranker
+from api.auth import require_bearer_token
 from dlh_ai.config import get_settings
 from dlh_ai.models import RerankRequest, RerankResponse
 from dlh_ai.utils import HDFSClient
 
 logger = logging.getLogger("dlh_ai")
+logger.setLevel(logging.DEBUG)
 settings = get_settings()
 
 RERANKER_MODEL_PATH = settings.reranker_api.reranker_service_model_path
@@ -39670,17 +39734,14 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
+    dependencies=[Depends(require_bearer_token)],
 )
 
 
 @app.middleware("http")
 async def _log_request_information(request: Request, call_next):
     # Reconstruct the path and query string without sensitive data
-    path_and_query_url = (
-        f"{request.url.path}?{request.query_params}"
-        if request.query_params
-        else request.url.path
-    )
+    path_and_query_url = request.url.path
 
     # tracking time taken by request to be fulfilled
     with about_time() as t:  # type: ignore
@@ -39712,13 +39773,11 @@ async def _internal_scalar_html():
     )
 
 
-@app.get("/", status_code=200)
-async def _index():
+@app.get("/healthz", status_code=200)
+async def health_check():
     """API Health check"""
-    return {
-        "message": "Yono Chatbot Reranker Service is up and running",
-        "model": RERANKER_MODEL_PATH,
-    }
+    logger.info("health check passed for reranker service")
+    return {"status": "ok", "service": "reranker"}
 
 
 @app.post("/api/v1/rerank", response_model=RerankResponse)
@@ -39745,10 +39804,11 @@ def start_server() -> None:
             )
         ),
         access_log=False,
-        log_level="info",
+        log_level="debug",
     )
 
     _uvicorn_server = uvicorn.Server(config)
+    logger.info("starting reranker service on port %s", config.port)
 
     try:
         loop = asyncio.get_running_loop()
@@ -39842,6 +39902,10 @@ class Common(BaseModel):
     llm_temperature: float = 0.2
     llm_max_tokens: int = 1024
     llm_request_timeout: float = 60.0
+
+
+class ApiAuth(BaseModel):
+    token_file: str
 
 
 class EmbeddingApiService(BaseModel):
@@ -39945,6 +40009,7 @@ class Settings(BaseSettings):
     """
 
     common: Common
+    api_auth: ApiAuth
     embedding_api: EmbeddingApiService
     rag_api: RAGApiService
     reranker_api: RerankerApiService
