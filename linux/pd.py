@@ -63,6 +63,8 @@ EXCLUDE_FOLDERS = {
     ".ipython",
     ".virtual_documents",
     ".ipynb_checkpoints",
+    "assets",
+
 
 }
 
@@ -120,9 +122,12 @@ EXCLUDE_EXTENSIONS = {
     ".woff",
     ".woff2",
     ".db",
+    ".xml",
     ".sqlite",
     ".ipynb",
     ".csv",
+    ".txt",
+    ".json",
 }
 
 MAX_FILE_SIZE_MB = 10
