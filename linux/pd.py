@@ -53,6 +53,17 @@ EXCLUDE_FOLDERS = {
     "bin",
     "obj",
     ".next",
+    ".experiments",
+    ".jupyter",
+    ".local",
+    ".ssh",
+    ".config",
+    ".cache",
+    ".ruff_cache",
+    ".ipython",
+    ".virtual_documents",
+    ".ipynb_checkpoints",
+
 }
 
 # Skip these files
@@ -110,6 +121,8 @@ EXCLUDE_EXTENSIONS = {
     ".woff2",
     ".db",
     ".sqlite",
+    ".ipynb",
+    ".csv",
 }
 
 MAX_FILE_SIZE_MB = 10
